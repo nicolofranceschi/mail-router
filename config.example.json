@@ -1,0 +1,42 @@
+{
+  "instanceName": "Smistamento posta",
+  "timeZone": "Europe/Rome",
+  "accounts": [
+    {
+      "id": "posta",
+      "imap": {
+        "host": "mail.example.it",
+        "port": 993,
+        "secure": true,
+        "user": "info@example.it",
+        "password": "dpapi:...generato da mail-router setup o mail-router encrypt..."
+      },
+      "smtp": {
+        "host": "mail.example.it",
+        "port": 587,
+        "secure": false,
+        "user": "info@example.it",
+        "password": "dpapi:...",
+        "from": "Smistamento <info@example.it>"
+      },
+      "watch": ["INBOX"],
+      "ownAddresses": ["info@example.it"],
+      "sentFolder": "Sent",
+      "trashFolder": "Trash",
+      "markForwarded": true
+    }
+  ],
+  "outbound": {
+    "allowedDomains": ["example.it"],
+    "forwardPrefix": "I:",
+    "replyPrefix": "R:"
+  },
+  "mcp": {
+    "host": "0.0.0.0",
+    "port": 8787
+  },
+  "engine": {
+    "pollSeconds": 60,
+    "retentionDays": 180
+  }
+}

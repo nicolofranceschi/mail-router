@@ -1,0 +1,8 @@
+node_modules/
+dist/
+# local runtime data (config with secrets, sqlite db, logs)
+.data/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

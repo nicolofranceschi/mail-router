@@ -1,0 +1,40 @@
+diff --git a/lib/imap-flow.js b/lib/imap-flow.js
+index 9f305304febd41b11d29200e6b23c8cc736428d2..13caab25d7008936b74e48703389637367c1c4f9 100644
+--- a/lib/imap-flow.js
++++ b/lib/imap-flow.js
+@@ -2423,6 +2423,9 @@ class ImapFlow extends EventEmitter {
+                 reject(err);
+             }, deadline.remaining());
+ 
++            let earlyChunks = [];
++            let collectEarly = chunk => earlyChunks.push(chunk);
++
+             let onConnect = () => {
+                 try {
+                     clearTimeout(this.connectTimeout);
+@@ -2474,6 +2477,13 @@ class ImapFlow extends EventEmitter {
+ 
+                     this.setSocketHandlers();
+                     this.setEventHandlers();
++                    // Replay what arrived before the connect callback, then hand the socket over
++                    // in the same tick so no chunk can slip in between.
++                    this.socket.removeListener('data', collectEarly);
++                    for (let chunk of earlyChunks) {
++                        this.streamer.write(chunk);
++                    }
++                    earlyChunks = [];
+                     this.socket.pipe(this.streamer);
+ 
+                     // executed by initial "* OK"
+@@ -2503,6 +2513,11 @@ class ImapFlow extends EventEmitter {
+ 
+             this.writeSocket = this.socket;
+ 
++            // Bun can emit the server greeting (sent right after the TLS handshake) before the
++            // connect callback runs. Without a listener at that point the data is dropped and
++            // connect() ends in GREETING_TIMEOUT, so collect it until onConnect pipes the socket.
++            this.socket.on('data', collectEarly);
++
+             // Store connection error handler for cleanup
+             this._connectErrorHandler = err => {
+                 clearTimeout(this.connectTimeout);
