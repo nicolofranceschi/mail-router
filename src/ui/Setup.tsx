@@ -17,6 +17,7 @@ import {
   type FormState,
 } from "./AccountForm";
 import { api } from "./api";
+import { ClaudeAccess, type Access as AccessInfo } from "./ClaudeAccess";
 import { Button, CopyButton, Field, Spinner } from "./components";
 
 const STEPS = ["Benvenuto", "Casella", "Cartelle", "Inoltro", "Sicurezza", "Installazione"];
@@ -26,7 +27,7 @@ interface FinishResult {
   steps: string[];
   running: boolean;
   openUrl: string;
-  access: { command: string; panelUrl: string; hosts: string[] };
+  access: AccessInfo;
 }
 
 export function Setup({ defaults }: { defaults: { instanceName: string } }) {
@@ -179,11 +180,8 @@ export function Setup({ defaults }: { defaults: { instanceName: string } }) {
                 </div>
               </div>
               <div className="stack tight">
-                <b>Collegare Claude Code dal tuo computer</b>
-                <pre className="block">{result.access.command}</pre>
-                <div>
-                  <CopyButton text={result.access.command} label="Copia il comando" />
-                </div>
+                <b>Collegare Claude</b>
+                <ClaudeAccess access={result.access} keyKnown />
               </div>
               <ul className="muted small" style={{ margin: 0, paddingLeft: 18 }}>
                 {result.steps.map((entry) => (

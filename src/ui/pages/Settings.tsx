@@ -14,6 +14,7 @@ import {
   type FormState,
 } from "../AccountForm";
 import { api, tool } from "../api";
+import { ClaudeAccess, type Access as AccessInfo } from "../ClaudeAccess";
 import { Button, Confirm, CopyButton, ErrorBox, Spinner, useAction, useLoad } from "../components";
 
 export function Settings() {
@@ -30,30 +31,20 @@ export function Settings() {
   );
 }
 
-function Access({ access }: { access: { hosts: string[]; panelUrl: string; mcpUrl: string; command: string } }) {
+function Access({ access }: { access: AccessInfo }) {
   const [confirm, setConfirm] = useState(false);
-  const [fresh, setFresh] = useState<{ key: string; command: string } | null>(null);
+  const [fresh, setFresh] = useState<(AccessInfo & { key: string }) | null>(null);
   return (
     <div className="card stack">
       <h2>Collegare Claude</h2>
-      <p className="muted">
-        Sul tuo computer, in Claude Code, lancia questo comando sostituendo &lt;CHIAVE&gt; con la chiave di accesso. Poi chiedi a
-        Claude, a parole, quali regole vuoi.
-      </p>
-      <pre className="block">{fresh ? fresh.command : access.command}</pre>
-      <div className="row wrap">
-        <CopyButton text={fresh ? fresh.command : access.command} label="Copia il comando" />
-        <span className="muted small">
-          Pannello da altri computer: <span className="mono">{access.panelUrl}</span>
-        </span>
-      </div>
+      <ClaudeAccess access={fresh ?? access} keyKnown={Boolean(fresh)} />
       {fresh ? (
         <div className="stack tight">
           <b>Nuova chiave di accesso</b>
           <div className="keybox">{fresh.key}</div>
           <div className="row">
             <CopyButton text={fresh.key} label="Copia la chiave" />
-            <span className="muted small">Viene mostrata solo ora.</span>
+            <span className="muted small">Viene mostrata solo ora; il testo qui sopra la contiene già.</span>
           </div>
         </div>
       ) : (

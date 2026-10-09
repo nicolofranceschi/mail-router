@@ -5,6 +5,7 @@ import { ConfigError, DB_FILE, defaultHome, loadConfig, VERSION } from "./config
 import { reportFailure } from "./crash";
 import { errorMessage, log } from "./log";
 import { hasToken, rotateToken } from "./auth";
+import { runBridge } from "./bridge";
 import { openUi, runUiHelper, UserFacingError } from "./launcher";
 import { connectInstructions, runSetup } from "./setup";
 import { promptProtectedSecret } from "./secrets";
@@ -27,6 +28,7 @@ Uso: mail-router <comando> [--home <cartella dati>]
   run         avvia il servizio in primo piano, con riavvio automatico in caso di errore
   status      mostra se il servizio locale risponde
   token       genera un nuovo token MCP (il precedente smette di funzionare)
+  bridge      ponte per l'app Claude: --url http://IP:8787/mcp, chiave in MAIL_ROUTER_KEY
   encrypt     cifra una password per config.json (Windows: DPAPI)
   version     versione
 
@@ -42,7 +44,7 @@ function parseArgs(argv: string[]) {
       const [name, inline] = arg.slice(2).split("=", 2) as [string, string | undefined];
       const next = argv[index + 1];
       if (inline !== undefined) flags.set(name, inline);
-      else if (next !== undefined && !next.startsWith("--") && ["home", "firewall", "out"].includes(name)) {
+      else if (next !== undefined && !next.startsWith("--") && ["home", "firewall", "out", "url", "key"].includes(name)) {
         flags.set(name, next);
         index++;
       } else flags.set(name, true);
@@ -149,6 +151,13 @@ async function main(): Promise<void> {
       return runSupervisor(home);
     case "ui":
       return openUi(home);
+    case "bridge": {
+      // For the Claude desktop app: a local stdio MCP server relaying to the service on the LAN.
+      const url = flags.get("url");
+      const key = flags.get("key") ?? process.env.MAIL_ROUTER_KEY;
+      if (typeof key !== "string" || !key) throw new Error("bridge: manca la chiave (variabile MAIL_ROUTER_KEY o --key)");
+      return runBridge(typeof url === "string" ? url : "http://127.0.0.1:8787/mcp", key);
+    }
     case "ui-helper": {
       const out = flags.get("out");
       if (typeof out !== "string") throw new Error("ui-helper: manca --out");

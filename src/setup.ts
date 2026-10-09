@@ -5,7 +5,7 @@ import { configPath, DB_FILE, parseConfig, PRIVATE_NETWORKS, toAccountId, type C
 import { listFoldersFor, verifyAccount } from "./check";
 import { rotateToken } from "./auth";
 import { promptProtectedSecret, resolveSecret } from "./secrets";
-import { assertAdmin, restrictDataFolder } from "./service/windows";
+import { assertAdmin, installDir, restrictDataFolder } from "./service/windows";
 import { Store } from "./store";
 import path from "node:path";
 
@@ -66,11 +66,21 @@ export function accessInfo(mcp: { host: string; port: number; tls?: unknown }, t
   const listensEverywhere = mcp.host === "0.0.0.0" || mcp.host === "::";
   const hosts = listensEverywhere ? lanAddresses() : [mcp.host];
   const host = hosts[0] ?? "<IP-del-PC>";
+  const mcpUrl = `${scheme}://${host}:${mcp.port}/mcp`;
+  // The Claude app reaches "connectors" from Anthropic's cloud, which cannot see the LAN:
+  // a server in its config file runs on the PC, so it starts this executable as a local bridge.
+  const executable = process.platform === "win32" ? path.join(installDir(), "mail-router.exe") : process.execPath;
+  const desktopConfig = JSON.stringify(
+    { mcpServers: { "mail-router": { command: executable, args: ["bridge", "--url", mcpUrl], env: { MAIL_ROUTER_KEY: token } } } },
+    null,
+    2,
+  );
   return {
     hosts,
     panelUrl: `${scheme}://${host}:${mcp.port}/`,
-    mcpUrl: `${scheme}://${host}:${mcp.port}/mcp`,
-    command: `claude mcp add --transport http --scope user mail-router ${scheme}://${host}:${mcp.port}/mcp --header "Authorization: Bearer ${token}"`,
+    mcpUrl,
+    command: `claude mcp add --transport http --scope user mail-router ${mcpUrl} --header "Authorization: Bearer ${token}"`,
+    desktopConfig,
   };
 }
 

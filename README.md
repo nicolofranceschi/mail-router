@@ -117,13 +117,39 @@ lancia da amministratore `mail-router install`.
 
 ## Collegare Claude
 
-Sul tuo PC (in LAN o VPN con l'ufficio), il comando stampato da `setup` / `token`:
+Il servizio è in rete locale, quindi il collegamento deve partire dal computer dove usi Claude.
+I «connettori» dell'app Claude (Personalizza → Connettori) **non vanno bene**: si collegano dai
+server di Anthropic su internet, accettano solo indirizzi https pubblici e non vedono la rete
+dell'ufficio. Le strade sono due, e il pannello (Impostazioni → Collegare Claude) dà il testo
+pronto per entrambe.
 
-```bash
-claude mcp add --transport http --scope user mail-router http://IP-DEL-PC:8787/mcp --header "Authorization: Bearer mr_..."
-```
+- **App Claude (chat)**: in Impostazioni → Sviluppatore → Modifica configurazione aggiungi in
+  `claude_desktop_config.json` il server `mail-router`. È lo stesso `mail-router.exe` avviato
+  come ponte locale (`bridge`): non serve installare Node.js. Poi chiudi del tutto l'app e
+  riaprila. Se l'app è su un altro PC Windows, copia lì l'exe e correggi il percorso.
 
-Poi in una nuova sessione di Claude Code, per esempio:
+  ```json
+  {
+    "mcpServers": {
+      "mail-router": {
+        "command": "C:\\Program Files\\MailRouter\\mail-router.exe",
+        "args": ["bridge", "--url", "http://IP-DEL-PC:8787/mcp"],
+        "env": { "MAIL_ROUTER_KEY": "mr_..." }
+      }
+    }
+  }
+  ```
+
+- **Claude Code** (terminale o scheda «Code» dell'app): su un computer dove Claude Code è
+  installato. Se «claude» non viene trovato, Claude Code su quel PC non c'è; su Windows si
+  installa da PowerShell con `irm https://claude.ai/install.ps1 | iex` e poi va aperto un nuovo
+  terminale.
+
+  ```bash
+  claude mcp add --transport http --scope user mail-router http://IP-DEL-PC:8787/mcp --header "Authorization: Bearer mr_..."
+  ```
+
+Esempi di richieste:
 
 - «Com'è messo il servizio? Ci sono errori?»
 - «Le mail della Cassa Edile vanno all'ufficio paghe, a meno che l'ufficio paghe sia già in copia.»
