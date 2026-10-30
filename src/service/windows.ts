@@ -6,7 +6,7 @@
  * environment variables, so nothing has to be quoted into a command line.
  */
 
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
 import { APP_NAME, loadConfig } from "../config";
@@ -70,10 +70,19 @@ export function restrictDataFolder(home: string): void {
     throw new Error(`${resolved} non è una cartella dedicata: usa una cartella solo per Mail Router (--home)`);
   }
   mkdirSync(home, { recursive: true });
-  const result = Bun.spawnSync(
-    [path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), home, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/T", "/Q"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  // Only the folder gets explicit entries; files inherit them. /inheritance:r with /T on the files
+  // themselves left those created by the service (owner SYSTEM) with no usable entry at all, and the
+  // service could no longer open its own database after an update.
+  icacls([home, "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"]);
+  icacls([home, "/inheritance:r", "/Q"]);
+  if (readdirSync(home).length > 0) icacls([path.join(home, "*"), "/reset", "/T", "/C", "/Q"]);
+}
+
+function icacls(args: string[]): void {
+  const result = Bun.spawnSync([path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"), ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   if (result.exitCode !== 0) {
     throw new Error(`icacls non riuscito: ${result.stderr.toString().trim() || result.stdout.toString().trim()}`);
   }

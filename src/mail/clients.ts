@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type Logger } from "imapflow";
 import nodemailer, { type Transporter } from "nodemailer";
 
 import type { AccountConfig } from "../config";
@@ -13,6 +13,23 @@ export interface AccountRuntime {
   smtpPassword: string | null;
 }
 
+type RefusedCommand = { responseStatus?: string; responseText?: string; executedCommand?: string };
+
+/**
+ * imapflow turns many refused commands into a plain `false` and keeps the
+ * server's answer only in its own log: surface those answers, drop the rest.
+ */
+function refusalLogger(accountId: string, purpose: string): Logger {
+  const forward = (entry: { err?: RefusedCommand } | undefined) => {
+    const err = entry?.err;
+    if (err?.responseStatus !== "NO" && err?.responseStatus !== "BAD") return;
+    const command = err.executedCommand ? ` a «${err.executedCommand}»` : "";
+    log.warn(`[${accountId}] IMAP (${purpose}): il server ha risposto ${err.responseStatus}${command} ${err.responseText ?? ""}`.trimEnd());
+  };
+  const ignore = () => {};
+  return { debug: ignore, info: ignore, warn: forward, error: forward };
+}
+
 export function createImapClient(account: AccountRuntime, purpose: string, options: { autoIdleDelayMs?: number } = {}): ImapFlow {
   const { imap } = account.config;
   const client = new ImapFlow({
@@ -21,7 +38,7 @@ export function createImapClient(account: AccountRuntime, purpose: string, optio
     secure: imap.secure,
     auth: { user: imap.user, pass: account.imapPassword },
     tls: { rejectUnauthorized: imap.rejectUnauthorized },
-    logger: false,
+    logger: refusalLogger(account.config.id, purpose),
     connectionTimeout: 30_000,
     greetingTimeout: 20_000,
     // Re-issue IDLE regularly so NAT gateways and firewalls keep the session open.

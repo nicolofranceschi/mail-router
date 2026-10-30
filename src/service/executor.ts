@@ -2,7 +2,7 @@ import type { ImapFlow } from "imapflow";
 
 import { errorMessage, log } from "../log";
 import { appendToSent, createImapClient, sendRaw, type AccountRuntime } from "../mail/clients";
-import { safeMove } from "../mail/move";
+import { messagePresent, safeMove } from "../mail/move";
 import { nowIso, type ActionRow } from "../store";
 import type { App } from "./app";
 
@@ -166,7 +166,7 @@ export class Executor {
           const flags = action.type === "seen" ? ["\\Seen"] : (payload.flags as string[]);
           if (await client.messageFlagsAdd(uid, flags, { uid: true })) return { flags };
           // imapflow answers false both for a vanished message and for a refused STORE.
-          if (!(await client.fetchOne(uid, { uid: true }, { uid: true }))) return { note: "messaggio non più presente nella cartella" };
+          if (!(await messagePresent(client, action.uid))) return { note: "messaggio non più presente nella cartella" };
           throw new PermanentError("il server ha rifiutato le etichette (permessi di scrittura sulla cartella?)");
         }
         case "move": {

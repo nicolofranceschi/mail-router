@@ -1,6 +1,6 @@
 {
   "name": "mail-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Servizio Windows in background: inoltro automatico IMAP con regole scritte dall'AI, gestito via MCP",
   "type": "module",

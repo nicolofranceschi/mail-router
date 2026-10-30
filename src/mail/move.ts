@@ -4,15 +4,33 @@ import { log } from "../log";
 
 export type MoveResult = { moved: true; target: string; newUid: number | null; folderCreated: boolean } | { moved: false; reason: "missing" };
 
-/** STATUS on a missing folder throws NotFound (imapflow double-checks with LIST); other refusals count as "exists". */
+/**
+ * STATUS on a missing folder throws NotFound (imapflow double-checks with LIST).
+ * Any other refusal makes imapflow answer `false`, which says nothing about the
+ * folder (a shared folder may refuse STATUS, a server may refuse it for a folder
+ * that is not there), so the folder list decides.
+ */
 export async function folderExists(client: ImapFlow, path: string): Promise<boolean> {
   try {
-    await client.status(path, { messages: true });
-    return true;
+    if (await client.status(path, { messages: true })) return true;
   } catch (error) {
     if ((error as { code?: string }).code === "NotFound") return false;
     throw error;
   }
+  const folders = await client.list();
+  return folders.some((folder) => folder.path === path);
+}
+
+/**
+ * imapflow answers `false` for an empty FETCH, and MDaemon has returned an
+ * empty FETCH for a message that was there: only a UID SEARCH that comes back
+ * without the UID counts as "gone".
+ */
+export async function messagePresent(client: ImapFlow, uid: number): Promise<boolean> {
+  if (await client.fetchOne(String(uid), { uid: true }, { uid: true })) return true;
+  const found = await client.search({ uid: String(uid) }, { uid: true });
+  if (!found) throw new Error(`Il server non ha confermato se il messaggio UID ${uid} è ancora nella cartella`);
+  return found.includes(uid);
 }
 
 /**
@@ -27,6 +45,9 @@ export async function folderExists(client: ImapFlow, path: string): Promise<bool
  * merely marked as deleted.
  */
 export async function safeMove(client: ImapFlow, uid: number, target: string): Promise<MoveResult> {
+  // Look for the message before any command on another folder, and create nothing for a message that is gone.
+  if (!(await messagePresent(client, uid))) return { moved: false, reason: "missing" };
+
   // Create only when missing: some servers answer CREATE on an existing folder with a bare NO.
   let folderCreated = false;
   if (!(await folderExists(client, target))) {
@@ -34,9 +55,6 @@ export async function safeMove(client: ImapFlow, uid: number, target: string): P
     folderCreated = true;
     log.info(`cartella «${target}» creata`);
   }
-
-  const present = await client.fetchOne(String(uid), { uid: true }, { uid: true });
-  if (!present) return { moved: false, reason: "missing" };
 
   if (client.capabilities.has("MOVE")) {
     const moved = await client.messageMove(String(uid), target, { uid: true });
