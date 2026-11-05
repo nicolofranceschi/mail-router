@@ -11,7 +11,7 @@
  * really travels through the server.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -128,6 +128,7 @@ suite("end to end (GreenMail)", () => {
           ownAddresses: ["info@azienda.it"],
           sentFolder: "Sent",
           trashFolder: "Trash",
+          markSortedRead: true,
         },
       ],
       outbound: { allowedDomains: ["azienda.it"] },
@@ -325,6 +326,17 @@ suite("end to end (GreenMail)", () => {
     });
     await send({ from: "x@altro.it", subject: "Tienila non letta", text: "x" });
     const archived = await until("moved unread", () => inArchive("Tienila non letta"));
+    expect(archived.flags).not.toContain("\\Seen");
+  });
+
+  test("set_account_options keeps sorted mail unread from the next message, and saves it", async () => {
+    const changed = await call("set_account_options", { markSortedRead: false });
+    expect(changed).toEqual({ account: "posta", previous: true, markSortedRead: false });
+    expect((await call("get_status")).accounts[0].markSortedRead).toBe(false);
+    expect(JSON.parse(readFileSync(path.join(home, "config.json"), "utf8")).accounts[0].markSortedRead).toBe(false);
+
+    await send({ from: "Newsletter <news@marketing.com>", subject: "Offerte di dicembre", text: "Sconti", headers: { "List-Unsubscribe": "<mailto:x@marketing.com>" } });
+    const archived = await until("newsletter archived unread", () => inArchive("Offerte di dicembre"));
     expect(archived.flags).not.toContain("\\Seen");
   });
 

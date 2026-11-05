@@ -134,7 +134,7 @@ export async function runSetup(home: string): Promise<void> {
     rejectUnauthorized: imapRejectUnauthorized,
   };
   const probeAccount = {
-    config: { id: accountId, imap, watch: ["INBOX"], ownAddresses: [], markForwarded: true, forwardAsAttachment: false },
+    config: { id: accountId, imap, watch: ["INBOX"], ownAddresses: [], markForwarded: true, forwardAsAttachment: false, markSortedRead: false },
     imapPassword: resolveSecret(imapPassword, "password IMAP"),
     smtpPassword: null,
   };

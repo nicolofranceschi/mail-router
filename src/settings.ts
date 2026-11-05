@@ -44,6 +44,7 @@ export const settingsForm = z.object({
   markForwarded: z.boolean().default(true),
   forwardAsAttachment: z.boolean().default(false),
   moveAfterForward: z.string().trim().min(1).nullable().optional(),
+  markSortedRead: z.boolean().default(false),
   allowedDomains: z.array(z.string().trim().min(2)).default([]),
   mcpPort: z.coerce.number().int().min(1).max(65535).default(8787),
 });
@@ -74,6 +75,7 @@ export function publicSettings(config: Config) {
     markForwarded: account.markForwarded,
     forwardAsAttachment: account.forwardAsAttachment,
     moveAfterForward: account.moveAfterForward ?? null,
+    markSortedRead: account.markSortedRead,
     allowedDomains: config.outbound.allowedDomains,
     mcpPort: config.mcp.port,
     otherAccounts: config.accounts.slice(1).map((other) => other.id),
@@ -115,6 +117,7 @@ export function probeRuntime(imap: ImapForm, smtp: SmtpForm | null, existing?: C
       ownAddresses: [],
       markForwarded: true,
       forwardAsAttachment: false,
+      markSortedRead: false,
     },
     imapPassword,
     smtpPassword,
@@ -174,6 +177,7 @@ export function buildConfig(form: SettingsForm, existing?: Config): Config {
     markForwarded: form.markForwarded,
     forwardAsAttachment: form.forwardAsAttachment,
     ...(form.moveAfterForward ? { moveAfterForward: form.moveAfterForward } : {}),
+    markSortedRead: form.markSortedRead,
   };
   const input: ConfigInput = {
     instanceName: form.instanceName,

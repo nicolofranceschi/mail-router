@@ -64,8 +64,10 @@ Decision object (every field optional):
   flags: ["$Keyword"]   IMAP keywords (or "\\\\Flagged") added to the original
   moveTo: "Folder/Path" (use list_folders for exact paths; the move always runs last; a folder that
            does not exist is created, and test_rules reports it under foldersToBeCreated)
-  markRead: true | false   sorted mail (forwarded or moved) is marked read without asking for it:
-           false keeps it unread, true also marks read a message the rule does not sort
+  markRead: true | false   overrides the account setting "markSortedRead" (get_status → accounts;
+           off by default, so sorted mail — forwarded or moved — stays unread). true marks the
+           message read (together with the move, if any), false keeps it unread. To change the
+           default for the whole account use set_account_options, not a markRead in every rule
   stop: true            lower-priority rules are not evaluated
   reason: "short explanation shown in the activity log"
 

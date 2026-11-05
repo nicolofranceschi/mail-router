@@ -29,9 +29,11 @@ sposti, segni, elimini).
   `null` oppure una decisione (`forward`, `flags`, `markRead`, `moveTo`, `stop`, `reason`). Gira in
   una sandbox QuickJS/WebAssembly senza rete, file o processi, con limiti di tempo e memoria:
   una regola sbagliata non può fare danni né fermare le altre.
-- **Smistata vuol dire letta.** Un messaggio inoltrato o spostato da una regola viene segnato come
-  letto (`markRead: false` lo lascia da leggere). Se l'inoltro o lo spostamento non riesce, resta
-  dov'è e non letto, così chi lavora la cartella lo vede.
+- **La posta smistata resta da leggere.** Un messaggio inoltrato o spostato da una regola non viene
+  segnato come letto, salvo che l'account lo chieda (impostazione «Segna come letta la posta
+  smistata» nel pannello, o lo strumento MCP `set_account_options`); una regola può sempre decidere
+  con `markRead: true/false`. Se l'inoltro o lo spostamento non riesce, resta dov'è e non letto,
+  così chi lavora la cartella lo vede.
 - **Dati separati dal codice.** Elenchi che cambiano (uffici, persone, fornitori) stanno nei
   «dati di riferimento» (`set_data`), che ogni regola riceve come `data`.
 - **Prima si osserva, poi si agisce.** Il motore parte in modalità **ombra**: valuta e registra
@@ -165,7 +167,7 @@ Esempi di richieste:
 
 | Area     | Strumenti |
 | -------- | --------- |
-| Motore   | `get_status`, `set_mode` (live / shadow / paused), `list_activity`, `list_outbox`, `retry_failed`, `reprocess_email`, `get_logs` |
+| Motore   | `get_status`, `set_mode` (live / shadow / paused), `set_account_options` (posta smistata letta o da leggere), `list_activity`, `list_outbox`, `retry_failed`, `reprocess_email`, `get_logs` |
 | Regole   | `get_rule_guide`, `list_rules`, `get_rule`, `create_rule`, `update_rule`, `delete_rule`, `restore_rule`, `test_rules` |
 | Dati     | `list_data`, `get_data`, `set_data`, `delete_data` |
 | Casella  | `list_folders`, `list_emails`, `search_emails`, `get_email`, `forward_email`, `reply_email`, `send_email`, `move_email`, `set_flags`, `delete_email` |

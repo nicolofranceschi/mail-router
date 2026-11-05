@@ -70,6 +70,8 @@ const accountSchema = z.object({
   markForwarded: z.boolean().default(true),
   /** Forward the original as an .eml attachment (keeps a PEC envelope and its signature intact). */
   forwardAsAttachment: z.boolean().default(false),
+  /** Mark mail a rule sorts (moves or forwards) as read. Off: it stays unread for whoever works the folder. */
+  markSortedRead: z.boolean().default(false),
   /** After a successful automatic forward, move the original here (created if missing). */
   moveAfterForward: z.string().min(1).optional(),
 });

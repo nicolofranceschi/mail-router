@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { DB_FILE, findAccount, VERSION, type Config } from "../config";
+import { configPath, DB_FILE, findAccount, VERSION, type Config } from "../config";
 import { log } from "../log";
 import type { AccountRuntime } from "../mail/clients";
 import type { Identity } from "../mail/compose";
@@ -95,6 +96,24 @@ export class App {
     return { previous, cancelled };
   }
 
+  /**
+   * Changes the read state given to sorted mail, at once and in config.json.
+   * The account object is shared with the watchers, so no restart is needed.
+   */
+  setMarkSortedRead(accountId: string | undefined, value: boolean): { account: string; previous: boolean; markSortedRead: boolean } {
+    const account = findAccount(this.config, accountId);
+    const previous = account.markSortedRead;
+    account.markSortedRead = value;
+    try {
+      writeFileSync(configPath(this.home), `${JSON.stringify(this.config, null, 2)}\n`);
+    } catch (error) {
+      account.markSortedRead = previous;
+      throw error;
+    }
+    log.info(`${account.id}: posta smistata ${value ? "segnata come letta" : "lasciata da leggere"}`);
+    return { account: account.id, previous, markSortedRead: value };
+  }
+
   account(accountId?: string): AccountRuntime {
     const config = findAccount(this.config, accountId);
     const runtime = this.accounts.get(config.id);
@@ -142,6 +161,7 @@ export class App {
         sendsFrom: account.smtp?.from ?? null,
         forwardAsAttachment: account.forwardAsAttachment,
         moveAfterForward: account.moveAfterForward ?? null,
+        markSortedRead: account.markSortedRead,
         sentFolder: account.sentFolder ?? null,
         trashFolder: account.trashFolder ?? null,
       })),

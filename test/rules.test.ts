@@ -126,6 +126,7 @@ const context: PlanContext = {
   ownAddresses: ["info@azienda.it"],
   alreadyForwarded: new Set(),
   markForwarded: true,
+  markSortedRead: true,
 };
 
 describe("engine", () => {
@@ -201,6 +202,17 @@ describe("engine", () => {
       ["flags", "pending", null],
       ["seen", "pending", null],
     ]);
+  });
+
+  test("with markSortedRead off (the default) sorted mail stays unread, unless a rule asks", () => {
+    const unread = (...rules: EngineRule[]) =>
+      planActions(evaluateRules(sandbox, rules, email, {}, 250), { ...context, markSortedRead: undefined });
+    expect(summary(unread(rule("a", "function rule() { return { moveTo: 'Archivio' } }")))).toEqual([["move", "pending", null]]);
+    expect(summary(unread(rule("a", "function rule() { return { forward: 'paghe@azienda.it' } }")))).toEqual([
+      ["forward", "pending", null],
+      ["flags", "pending", null],
+    ]);
+    expect(summary(unread(rule("a", "function rule() { return { moveTo: 'Archivio', markRead: true } }")))).toEqual([["move", "pending", true]]);
   });
 
   test("a rule that sorts nothing leaves the read state alone, unless it asks", () => {

@@ -86,6 +86,22 @@ export function registerEngineTools(server: McpServer, app: App): void {
   );
 
   server.registerTool(
+    "set_account_options",
+    {
+      title: "Opzioni dell'account",
+      description:
+        "Changes account options at once (saved in config.json, no restart). markSortedRead: whether mail a rule sorts (moves or forwards) is marked read; off by default, so it stays unread for whoever works the folder. A rule's explicit markRead still wins. Current values: get_status → accounts.",
+      inputSchema: {
+        ...accountArg,
+        markSortedRead: z.boolean().describe("true: sorted mail is marked read; false: it stays unread"),
+      },
+    },
+    handler("set_account_options", ({ account, markSortedRead }: { account?: string; markSortedRead: boolean }) =>
+      app.setMarkSortedRead(account, markSortedRead),
+    ),
+  );
+
+  server.registerTool(
     "list_activity",
     {
       title: "Attività",

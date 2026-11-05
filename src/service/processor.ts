@@ -94,6 +94,7 @@ export async function processMessage(
     alreadyForwarded: app.store.forwardedRecipients(accountConfig.id, email.messageId, message.folder, message.uid),
     markForwarded: accountConfig.markForwarded,
     moveAfterForward: accountConfig.moveAfterForward ?? null,
+    markSortedRead: accountConfig.markSortedRead,
   });
 
   const actions: ActionInput[] = [];
@@ -214,6 +215,7 @@ export async function simulateMessage(
     alreadyForwarded: new Set(),
     markForwarded: false,
     moveAfterForward: message.account.config.moveAfterForward ?? null,
+    markSortedRead: message.account.config.markSortedRead,
   });
   return { email, outcomes, plan };
 }

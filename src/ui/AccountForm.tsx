@@ -34,6 +34,7 @@ export interface FormState {
   markForwarded: boolean;
   forwardAsAttachment: boolean;
   moveAfterForward: string | null;
+  markSortedRead: boolean;
   mcpPort: string;
 }
 
@@ -68,6 +69,7 @@ export function emptyForm(instanceName = "Smistamento posta"): FormState {
     markForwarded: true,
     forwardAsAttachment: false,
     moveAfterForward: null,
+    markSortedRead: false,
     mcpPort: "8787",
   };
 }
@@ -89,6 +91,7 @@ export function formFromSettings(settings: any): FormState {
     markForwarded: settings.markForwarded,
     forwardAsAttachment: settings.forwardAsAttachment ?? false,
     moveAfterForward: settings.moveAfterForward ?? null,
+    markSortedRead: settings.markSortedRead ?? false,
     mcpPort: String(settings.mcpPort),
   };
 }
@@ -120,6 +123,7 @@ export function settingsPayload(state: FormState) {
     markForwarded: state.markForwarded,
     forwardAsAttachment: state.forwardAsAttachment,
     moveAfterForward: state.moveAfterForward,
+    markSortedRead: state.markSortedRead,
     mcpPort: Number(state.mcpPort),
   };
 }
@@ -414,6 +418,10 @@ export function FolderFields({ state, set, folders }: { state: FormState; set: S
           <FolderSelect folders={folders} value={state.trashFolder} onChange={(trashFolder) => set((current) => ({ ...current, trashFolder }))} />
         </Field>
       </div>
+      <Check checked={state.markSortedRead} onChange={(markSortedRead) => set((current) => ({ ...current, markSortedRead }))}>
+        Segna come letta la posta smistata dalle regole (spostata o inoltrata). Se non è spuntato, resta da leggere; una regola
+        può comunque decidere diversamente.
+      </Check>
     </div>
   );
 }

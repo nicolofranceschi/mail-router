@@ -87,6 +87,8 @@ export interface PlanContext {
   markForwarded: boolean;
   /** Folder the original goes to once forwarded (account setting). */
   moveAfterForward?: string | null;
+  /** Mark sorted mail (moved or forwarded) as read when no rule says otherwise (account setting). */
+  markSortedRead?: boolean;
 }
 
 const TYPE_ORDER: Record<string, number> = { forward: 0, flags: 1, seen: 2, move: 3 };
@@ -109,8 +111,9 @@ function sameFolder(a: string, b: string): boolean {
  * Turns rule decisions into an ordered action list. Forwards run first, then
  * flags, read state and finally the move (which changes the UID). Live actions
  * are `pending` (the executor sends them); shadow-mode ones are `simulated`.
- * Sorted mail is marked read: `markRead` on the move, so the two succeed or
- * fail together, and a `seen` action when the message stays where it is.
+ * With `markSortedRead`, sorted mail is marked read: `markRead` on the move, so
+ * the two succeed or fail together, and a `seen` action when the message stays
+ * where it is. Otherwise it stays unread. A rule's explicit `markRead` wins.
  */
 export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedAction[] {
   const own = new Set(ctx.ownAddresses.map(normalizeAddress));
@@ -241,7 +244,7 @@ export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedA
     );
     const move = actions.find((action) => action.type === "move" && action.status === status);
     const sorted = move || alreadyInPlace[status] || actions.some((action) => action.type === "forward" && action.status === status);
-    if (!(explicit ? explicit.decision!.markRead : sorted)) continue;
+    if (!(explicit ? explicit.decision!.markRead : ctx.markSortedRead === true && sorted)) continue;
     if (move) move.payload = { ...move.payload, markRead: true };
     else actions.push({ ruleId: explicit?.ruleId ?? null, type: "seen", payload: {}, status, note: explicit ? null : "messaggio smistato" });
   }
