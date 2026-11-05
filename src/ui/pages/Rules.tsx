@@ -75,7 +75,7 @@ export function Rules() {
                       </div>
                       <span className="muted small">{rule.description}</span>
                       <span className="small muted">
-                        Ultimi 30 giorni: {rule.last30Days.matched} messaggi riconosciuti
+                        Ultimi 30 giorni: {rule.last30Days.matched} {rule.last30Days.matched === 1 ? "messaggio riconosciuto" : "messaggi riconosciuti"}
                         {rule.last30Days.errors ? <Badge tone="err">{rule.last30Days.errors} errori</Badge> : null}
                       </span>
                     </div>

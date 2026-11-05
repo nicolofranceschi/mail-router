@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, tool } from "./api";
 import { Confirm, useAction, useLoad } from "./components";
 import { ENGINE_MODE } from "./format";
+import { BrandMark, LogoutIcon, NAV_ICONS } from "./icons";
 import { Activity } from "./pages/Activity";
 import { DataPage } from "./pages/Data";
 import { Mailbox } from "./pages/Mailbox";
@@ -41,34 +42,41 @@ export function Panel({ instanceName, version, onLogout }: { instanceName: strin
     <div className="shell">
       <nav className="sidebar">
         <div className="brand">
-          <div className="brand-mark">✉</div>
+          <BrandMark />
           <span className="ellipsis">Mail Router</span>
         </div>
-        {PAGES.map((entry) => (
-          <a key={entry.id} href={`#/${entry.id}`} className={`nav-item ${page === entry.id ? "active" : ""}`}>
-            {entry.label}
-          </a>
-        ))}
-        <div className="sidebar-foot stack tight small muted">
+        <div className="nav-items">
+          {PAGES.map((entry) => (
+            <a
+              key={entry.id}
+              href={`#/${entry.id}`}
+              className={`nav-item ${page === entry.id ? "active" : ""}`}
+              aria-current={page === entry.id ? "page" : undefined}
+            >
+              {NAV_ICONS[entry.id]}
+              <span>{entry.label}</span>
+            </a>
+          ))}
+        </div>
+        <div className="sidebar-foot">
           <span>Versione {version}</span>
           <a
             href="#"
+            className="logout"
             onClick={async (event) => {
               event.preventDefault();
               await api("/api/session/logout", {}).catch(() => undefined);
               onLogout();
             }}
           >
+            <LogoutIcon />
             Esci
           </a>
         </div>
       </nav>
       <div className="main">
         <header className="topbar">
-          <div className="grow">
-            <h1 className="ellipsis">{instanceName}</h1>
-            <p className="muted small">{ENGINE_MODE[mode]?.help}</p>
-          </div>
+          <span className="topbar-title ellipsis">{instanceName}</span>
           <ModeSwitch mode={mode} onChanged={status.reload} />
         </header>
         <main className="content">
@@ -101,6 +109,7 @@ function ModeSwitch({ mode, onChanged }: { mode: string; onChanged: () => void }
             key={value}
             role="radio"
             aria-checked={mode === value}
+            title={ENGINE_MODE[value]?.help}
             className={`${mode === value ? "on" : ""} ${value === "live" ? "live" : value === "paused" ? "paused" : ""}`}
             onClick={() => (value === mode ? undefined : setPending(value))}
           >

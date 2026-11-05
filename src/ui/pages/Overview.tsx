@@ -1,6 +1,7 @@
 import { tool } from "../api";
 import { ActionChips, Badge, Button, Empty, ErrorBox, Spinner, useAction, useLoad } from "../components";
-import { ENGINE_MODE, formatDate, relative } from "../format";
+import { folderPrefix, folderTail, formatDate, friendlyError, lastSegment, overallState, relative, watcherHealth } from "../format";
+import { StatusIcon } from "../icons";
 
 export function Overview({ status }: { status: ReturnType<typeof useLoad<any>> }) {
   const activity = useLoad(() => tool("list_activity", { limit: 8 }), [], 20_000);
@@ -12,71 +13,64 @@ export function Overview({ status }: { status: ReturnType<typeof useLoad<any>> }
 
   const failed = data.outbox?.error ?? 0;
   const queued = (data.outbox?.pending ?? 0) + (data.outbox?.running ?? 0);
+  const watchers: any[] = data.watchers;
+  const health = watcherHealth(watchers);
+  const state = overallState(data.mode, watchers, failed);
+  const evaluated = watchers.reduce((sum, watcher) => sum + (watcher.processedSinceStart ?? 0), 0);
 
   return (
     <div className="page">
-      <div className="cards">
-        <div className="card stack tight">
-          <span className="muted small">Modalità</span>
-          <span className="stat">{ENGINE_MODE[data.mode]?.label}</span>
-          <span className="muted small">{ENGINE_MODE[data.mode]?.help}</span>
+      <section className={`hero ${state.tone}`}>
+        <div className="hero-icon">
+          <StatusIcon tone={state.tone} />
         </div>
-        <div className="card stack tight">
-          <span className="muted small">Regole</span>
-          <span className="stat">{data.rules.enabled} attive</span>
-          <span className="muted small">
-            {data.rules.shadow} in prova · {data.rules.disabled} spente
-          </span>
+        <div className="grow">
+          <h1 className="hero-title">{state.title}</h1>
+          <p className="muted">{state.detail}</p>
         </div>
-        <div className="card stack tight">
-          <span className="muted small">Coda di invio</span>
-          <span className="stat">{queued}</span>
+      </section>
+
+      <div className="metrics">
+        <Metric label="Cartelle collegate" value={`${health.connected}/${health.total}`}>
+          {health.down.length ? `${health.down.length} da ricollegare` : "tutte in ascolto"}
+        </Metric>
+        <Metric label="Regole attive" value={data.rules.enabled}>
+          {data.rules.shadow} in prova · {data.rules.disabled} spente
+        </Metric>
+        <Metric label="Coda di invio" value={queued}>
           {failed ? (
-            <div className="row wrap">
+            <span className="row wrap">
               <Badge tone="err">{failed} non riuscite</Badge>
-              <Button small busy={busy} onClick={() => run(async () => {
-                await tool("retry_failed");
-                status.reload();
-              }, "Azioni rimesse in coda")}>
+              <Button
+                small
+                busy={busy}
+                onClick={() =>
+                  run(async () => {
+                    await tool("retry_failed");
+                    status.reload();
+                  }, "Azioni rimesse in coda")
+                }
+              >
                 Riprova
               </Button>
-            </div>
+            </span>
           ) : (
-            <span className="muted small">nessun errore</span>
+            "nessun errore"
           )}
-        </div>
-        <div className="card stack tight">
-          <span className="muted small">In funzione da</span>
-          <span className="stat">{uptime(data.uptimeMinutes)}</span>
-          <span className="muted small">versione {data.version}</span>
-        </div>
+        </Metric>
+        <Metric label="Messaggi valutati" value={evaluated.toLocaleString("it-IT")}>
+          dall'avvio, {uptime(data.uptimeMinutes)} fa
+        </Metric>
       </div>
 
-      <div className="card stack">
-        <h2>Cartelle sorvegliate</h2>
-        {data.watchers.map((watcher: any) => (
-          <div key={watcher.id} className="row wrap">
-            <span className={`dot ${watcher.connected ? "ok" : "err"}`} />
-            <span className="grow">
-              <b>{watcher.folder}</b> <span className="muted small">({watcher.account})</span>
-            </span>
-            <span className="muted small">
-              {watcher.connected ? "collegata" : "non collegata"} · ultimo controllo {relative(watcher.lastCheckAt)} ·{" "}
-              {watcher.processedSinceStart} messaggi valutati
-            </span>
-            {watcher.lastError ? (
-              <div className="notice err small" style={{ width: "100%" }}>
-                {formatDate(watcher.lastErrorAt)}: {watcher.lastError}
-              </div>
-            ) : null}
-          </div>
-        ))}
-      </div>
+      <FolderPanel watchers={watchers} showAccount={(data.accounts?.length ?? 1) > 1} />
 
-      <div className="card flush">
-        <div className="row spread" style={{ padding: "16px 18px 6px" }}>
+      <section className="card flush">
+        <div className="panel-head">
           <h2>Ultimi messaggi</h2>
-          <a href="#/attivita">Tutta l'attività</a>
+          <a href="#/attivita" className="small">
+            Tutta l'attività
+          </a>
         </div>
         {activity.data ? (
           activity.data.activity.length ? (
@@ -93,7 +87,7 @@ export function Overview({ status }: { status: ReturnType<typeof useLoad<any>> }
             <Spinner />
           </div>
         )}
-      </div>
+      </section>
 
       {data.rules.total === 0 ? (
         <div className="notice">
@@ -106,20 +100,69 @@ export function Overview({ status }: { status: ReturnType<typeof useLoad<any>> }
   );
 }
 
-export function ActivityRow({ entry }: { entry: any }) {
+function Metric({ label, value, children }: { label: string; value: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="list-item">
-      <div className="grow stack tight">
-        <div className="row spread">
-          <span className="ellipsis">
-            <b>{entry.message.subject || "(senza oggetto)"}</b>
-          </span>
-          <span className="muted small" style={{ flex: "none" }}>
-            {formatDate(entry.at)}
-          </span>
-        </div>
+    <div className="metric">
+      <span className="metric-label">{label}</span>
+      <span className="metric-value">{value}</span>
+      <span className="metric-sub">{children}</span>
+    </div>
+  );
+}
+
+function FolderPanel({ watchers, showAccount }: { watchers: any[]; showAccount: boolean }) {
+  const { down, lastInterruption } = watcherHealth(watchers);
+  const prefix = folderPrefix(watchers.map((watcher) => watcher.folder));
+  const ordered = [...down, ...watchers.filter((watcher) => watcher.connected)];
+
+  return (
+    <section className="card flush">
+      <div className="panel-head">
+        <h2>Cartelle sorvegliate</h2>
+        <span className="muted small ellipsis" title={prefix}>
+          {prefix ? `in ${prefix} · ` : ""}messaggi valutati dall'avvio
+        </span>
+      </div>
+      <div className="folder-grid">
+        {ordered.map((watcher) => (
+          <div
+            key={watcher.id}
+            className={`folder-row ${watcher.connected ? "" : "down"}`}
+            title={`${watcher.folder}\nUltimo controllo: ${relative(watcher.lastCheckAt)}`}
+          >
+            <span className={`dot ${watcher.connected ? "ok" : "err"}`} />
+            <span className="folder-name ellipsis">
+              {folderTail(watcher.folder, prefix)}
+              {showAccount ? <span className="muted small"> ({watcher.account})</span> : null}
+            </span>
+            <span className="folder-count">{watcher.processedSinceStart}</span>
+            {!watcher.connected ? (
+              <span className="folder-error" title={watcher.lastError ?? undefined}>
+                {watcher.lastError ? `${friendlyError(watcher.lastError)} · ${formatDate(watcher.lastErrorAt)}` : "collegamento in corso"}
+              </span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      {lastInterruption ? (
+        <p className="panel-note" title={lastInterruption.error}>
+          Ultima interruzione {formatDate(lastInterruption.at)}: {friendlyError(lastInterruption.error)}. Ricollegamento automatico riuscito.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+export function ActivityRow({ entry }: { entry: any }) {
+  const reason = entry.rules.find((rule: any) => rule.reason)?.reason;
+  const failedRules = entry.rules.filter((rule: any) => rule.error);
+  return (
+    <div className={`list-item activity ${entry.rules.length ? "" : "quiet"}`}>
+      <span className="when">{formatDate(entry.at)}</span>
+      <div className="stack tight" style={{ minWidth: 0 }}>
+        <span className="subject ellipsis">{entry.message.subject || "(senza oggetto)"}</span>
         <span className="muted small ellipsis">
-          {entry.message.from ?? "mittente sconosciuto"} · {entry.message.folder}
+          {entry.message.from ?? "mittente sconosciuto"} · <span title={entry.message.folder}>{lastSegment(entry.message.folder)}</span>
           {entry.origin === "reprocess" ? " · rielaborato" : ""}
         </span>
         {entry.note ? <span className="small muted">{entry.note}</span> : null}
@@ -131,14 +174,10 @@ export function ActivityRow({ entry }: { entry: any }) {
                 {rule.error ? ": errore" : rule.mode === "shadow" ? " (prova)" : ""}
               </Badge>
             ))}
-            {entry.rules.find((rule: any) => rule.reason) ? (
-              <span className="muted">— {entry.rules.find((rule: any) => rule.reason)?.reason}</span>
-            ) : null}
+            {reason ? <span className="muted">{reason}</span> : null}
           </div>
-        ) : !entry.note ? (
-          <span className="small muted">Nessuna regola applicata</span>
         ) : null}
-        {entry.rules.filter((rule: any) => rule.error).map((rule: any) => (
+        {failedRules.map((rule: any) => (
           <span key={rule.ruleId} className="small" style={{ color: "var(--err)" }}>
             {rule.rule}: {rule.error}
           </span>

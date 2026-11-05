@@ -19,6 +19,7 @@ import {
 import { api } from "./api";
 import { ClaudeAccess, type Access as AccessInfo } from "./ClaudeAccess";
 import { Button, CopyButton, Field, Spinner } from "./components";
+import { BrandMark } from "./icons";
 
 const STEPS = ["Benvenuto", "Casella", "Cartelle", "Inoltro", "Sicurezza", "Installazione"];
 
@@ -94,7 +95,7 @@ export function Setup({ defaults }: { defaults: { instanceName: string } }) {
     <div className="centered">
       <div className="wizard">
         <div className="row" style={{ gap: 12 }}>
-          <div className="brand-mark">✉</div>
+          <BrandMark />
           <div>
             <h1>Configura Mail Router</h1>
             <p className="muted">

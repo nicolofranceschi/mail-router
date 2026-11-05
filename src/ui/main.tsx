@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { api, onUnauthorized } from "./api";
 import { Button, ErrorBox, Field, Spinner, ToastProvider } from "./components";
+import { BrandMark } from "./icons";
 import { Panel } from "./Panel";
 import { Setup } from "./Setup";
 
@@ -96,7 +97,7 @@ function Login({ instanceName, onDone }: { instanceName: string; onDone: () => v
         }}
       >
         <div className="row" style={{ gap: 12 }}>
-          <div className="brand-mark">✉</div>
+          <BrandMark />
           <div>
             <h1>{instanceName}</h1>
             <p className="muted small">Pannello di Mail Router</p>
