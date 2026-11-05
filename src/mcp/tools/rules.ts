@@ -3,21 +3,40 @@ import { z } from "zod";
 
 import type { EngineRule } from "../../rules/engine";
 import type { App } from "../../service/app";
-import { fetchForAnalysis, type SearchCriteria } from "../../service/mailbox";
+import { fetchForAnalysis, listFolders, type SearchCriteria } from "../../service/mailbox";
 import { simulateMessage } from "../../service/processor";
-import type { RuleMode, RuleRow } from "../../store";
+import type { EngineMode, RuleMode, RuleRow } from "../../store";
 import { handler } from "../format";
 import { RULE_GUIDE } from "../guide";
 import { accountArg, folderArg, searchShape } from "./shared";
 
 const modeEnum = z.enum(["enabled", "shadow", "disabled"]);
 
-function ruleSummary(rule: RuleRow, stats?: { evaluated: number; matched: number; errors: number; lastMatchAt: string | null }) {
+type RuleEffect = "live" | "simulated" | "off";
+
+/** What a rule does right now: its own mode alone does not say, the engine mode counts too. */
+function ruleEffect(mode: RuleMode, engineMode: EngineMode): RuleEffect {
+  if (mode === "disabled" || engineMode === "paused") return "off";
+  return mode === "enabled" && engineMode === "live" ? "live" : "simulated";
+}
+
+const EFFECT_NOTE: Record<RuleEffect, string> = {
+  live: "La regola è attiva: agisce sui prossimi messaggi.",
+  simulated: "La regola registra le decisioni senza eseguirle finché regola e motore non sono attivi.",
+  off: "La regola non gira: è disattivata oppure il motore è in pausa.",
+};
+
+function ruleSummary(
+  rule: RuleRow,
+  engineMode: EngineMode,
+  stats?: { evaluated: number; matched: number; errors: number; lastMatchAt: string | null },
+) {
   return {
     id: rule.id,
     name: rule.name,
     description: rule.description,
     mode: rule.mode,
+    effect: ruleEffect(rule.mode, engineMode),
     priority: rule.priority,
     version: rule.version,
     updatedAt: rule.updated_at,
@@ -46,15 +65,22 @@ export function registerRuleTools(server: McpServer, app: App): void {
     "list_rules",
     {
       title: "Elenco regole",
-      description: "Lists the forwarding rules in evaluation order (ascending priority) with mode and 30-day match statistics.",
-      inputSchema: { includeCode: z.boolean().optional().describe("Include each rule's source code") },
+      description:
+        "Lists the rules in evaluation order (ascending priority) with mode, 30-day match statistics and `effect`: 'live' (executing now: rule enabled and engine live), 'simulated' (decisions logged only) or 'off'. onlyActive returns just the 'live' ones.",
+      inputSchema: {
+        includeCode: z.boolean().optional().describe("Include each rule's source code"),
+        onlyActive: z.boolean().optional().describe("Only the rules executing right now"),
+      },
     },
-    handler("list_rules", ({ includeCode }: { includeCode?: boolean }) => {
+    handler("list_rules", ({ includeCode, onlyActive }: { includeCode?: boolean; onlyActive?: boolean }) => {
       const stats = app.store.ruleStats(new Date(Date.now() - 30 * 86_400_000).toISOString());
-      const rules = app.store.listRules().map((rule) => ({
-        ...ruleSummary(rule, stats.get(rule.id)),
-        ...(includeCode ? { code: rule.code } : {}),
-      }));
+      const rules = app.store
+        .listRules()
+        .map((rule) => ({
+          ...ruleSummary(rule, app.mode, stats.get(rule.id)),
+          ...(includeCode ? { code: rule.code } : {}),
+        }))
+        .filter((rule) => !onlyActive || rule.effect === "live");
       const deleted = app.store.deletedRules().map((version) => ({
         id: version.rule_id,
         name: version.name,
@@ -77,7 +103,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
       if (!rule) throw new Error(`Regola ${id} non trovata (list_rules mostra anche quelle eliminate)`);
       const stats = app.store.ruleStats(new Date(Date.now() - 30 * 86_400_000).toISOString());
       return {
-        ...ruleSummary(rule, stats.get(rule.id)),
+        ...ruleSummary(rule, app.mode, stats.get(rule.id)),
         code: rule.code,
         ...(includeHistory
           ? {
@@ -101,7 +127,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Crea regola",
       description:
-        "Creates a forwarding rule. `code` must define `function rule(email, data, h)` returning null or a decision (see get_rule_guide). New rules start in mode 'shadow' (decisions logged, nothing executed) unless the user explicitly asked to enable them. Test the code with test_rules first.",
+        "Creates a rule. `code` must define `function rule(email, data, h)` returning null or a decision (see get_rule_guide). New rules start in mode 'shadow' (decisions logged, nothing executed) unless the user explicitly asked to enable them. Test the code with test_rules first.",
       inputSchema: {
         name: z.string().min(1).max(120).describe("Short name, in the user's language"),
         description: z.string().max(2000).describe("What the rule does and why, in plain words"),
@@ -122,12 +148,9 @@ export function registerRuleTools(server: McpServer, app: App): void {
           mode: args.mode ?? "shadow",
         });
         return {
-          created: ruleSummary(rule),
+          created: ruleSummary(rule, app.mode),
           engineMode: app.mode,
-          note:
-            rule.mode === "enabled" && app.mode === "live"
-              ? "La regola è attiva: agisce sui prossimi messaggi."
-              : "La regola registra le decisioni senza eseguirle finché regola e motore non sono attivi.",
+          note: EFFECT_NOTE[ruleEffect(rule.mode, app.mode)],
         };
       },
     ),
@@ -138,7 +161,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Modifica regola",
       description:
-        "Changes a rule's code, name, description, priority or mode ('enabled' | 'shadow' | 'disabled'). Every change is versioned. Only set mode 'enabled' when the user asked for it.",
+        "Changes a rule's code, name, description, priority or mode. This is how a rule is published (mode 'enabled'), sent back to observation ('shadow') or switched off ('disabled'). Every change is versioned. Only set mode 'enabled' when the user asked for it. New code on an enabled rule applies from the next message: try it with test_rules first.",
       inputSchema: {
         id: z.string(),
         name: z.string().min(1).max(120).optional(),
@@ -154,7 +177,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
         if (args.code !== undefined) checkCode(app, args.code);
         const { id, ...patch } = args;
         const rule = app.store.updateRule(id, patch);
-        return { updated: ruleSummary(rule), engineMode: app.mode };
+        return { updated: ruleSummary(rule, app.mode), engineMode: app.mode, note: EFFECT_NOTE[ruleEffect(rule.mode, app.mode)] };
       },
     ),
   );
@@ -176,12 +199,12 @@ export function registerRuleTools(server: McpServer, app: App): void {
     "restore_rule",
     {
       title: "Ripristina versione",
-      description: "Restores a rule to a saved version (see get_rule includeHistory or list_rules deletedRules), including deleted rules.",
+      description: "Restores a rule to a saved version (see get_rule includeHistory or list_rules deletedRules), including deleted rules. The version's mode comes back too: a version that was enabled is live again at once.",
       inputSchema: { id: z.string(), version: z.number().int().positive() },
     },
     handler("restore_rule", ({ id, version }: { id: string; version: number }) => {
       const rule = app.store.restoreRule(id, version);
-      return { restored: ruleSummary(rule), fromVersion: version };
+      return { restored: ruleSummary(rule, app.mode), fromVersion: version, engineMode: app.mode, note: EFFECT_NOTE[ruleEffect(rule.mode, app.mode)] };
     }),
   );
 
@@ -190,7 +213,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Prova regole",
       description:
-        "Dry-runs rules on real messages without sending or changing anything. Pass `code` to test a draft (alone, or among the saved rules with withExistingRules), `ruleIds` to test specific saved rules, or nothing to test every non-disabled rule. Messages: explicit `uids`, or the newest `last` (default 50, max 300) optionally filtered with search criteria. Shadow rules are treated as enabled to show what would happen. Returns only matches and errors unless showAll.",
+        "Dry-runs rules on real messages without sending or changing anything. Pass `code` to test a draft (alone, or among the saved rules with withExistingRules), `ruleIds` to test specific saved rules, or nothing to test every non-disabled rule. Messages: explicit `uids`, or the newest `last` (default 50, max 300) optionally filtered with search criteria. Shadow rules are treated as enabled to show what would happen. Returns only matches and errors unless showAll. foldersToBeCreated lists moveTo targets that do not exist yet: a real move would create them, so check them for typos.",
       inputSchema: {
         ...accountArg,
         ...folderArg,
@@ -244,6 +267,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
         let matched = 0;
         let errors = 0;
         const perRule = new Map<string, number>();
+        const moveTargets = new Set<string>();
         const { skipped } = await fetchForAnalysis(
           account,
           folder,
@@ -258,6 +282,9 @@ export function registerRuleTools(server: McpServer, app: App): void {
               if (failed) errors++;
               for (const outcome of outcomes) {
                 if (outcome.matched) perRule.set(outcome.ruleName, (perRule.get(outcome.ruleName) ?? 0) + 1);
+              }
+              for (const action of plan) {
+                if (action.type === "move" && action.status === "pending") moveTargets.add(action.payload.target as string);
               }
               if (!hit && !failed && !args.showAll) return;
               results.push({
@@ -287,6 +314,8 @@ export function registerRuleTools(server: McpServer, app: App): void {
             }
           },
         );
+        const existing = new Set(moveTargets.size ? (await listFolders(account)).map((entry) => entry.path) : []);
+        const foldersToBeCreated = [...moveTargets].filter((target) => !existing.has(target));
         return {
           folder,
           tested,
@@ -294,6 +323,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
           errors,
           matchesPerRule: Object.fromEntries(perRule),
           ...(skipped.length ? { skippedTooLarge: skipped } : {}),
+          ...(foldersToBeCreated.length ? { foldersToBeCreated } : {}),
           results,
         };
       },

@@ -76,6 +76,8 @@ export interface PlannedAction {
 }
 
 export interface PlanContext {
+  /** Folder the message is in. */
+  folder: string;
   engineMode: EngineMode;
   /** Treat shadow rules as enabled: used by test runs to show what *would* happen. */
   treatShadowAsEnabled?: boolean;
@@ -98,10 +100,17 @@ export function domainAllowed(address: string, allowedDomains: string[]): boolea
   });
 }
 
+/** IMAP folder names are case-sensitive, except INBOX. */
+function sameFolder(a: string, b: string): boolean {
+  return a === b || (a.toUpperCase() === "INBOX" && b.toUpperCase() === "INBOX");
+}
+
 /**
  * Turns rule decisions into an ordered action list. Forwards run first, then
  * flags, read state and finally the move (which changes the UID). Live actions
  * are `pending` (the executor sends them); shadow-mode ones are `simulated`.
+ * Sorted mail is marked read: `markRead` on the move, so the two succeed or
+ * fail together, and a `seen` action when the message stays where it is.
  */
 export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedAction[] {
   const own = new Set(ctx.ownAddresses.map(normalizeAddress));
@@ -110,14 +119,18 @@ export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedA
   const actions: Omit<PlannedAction, "seq">[] = [];
   let liveMove = false;
   let simulatedMove = false;
+  const alreadyInPlace = { pending: false, simulated: false };
+  const statusOf = (outcome: RuleOutcome) =>
+    ctx.engineMode === "live" &&
+    (outcome.ruleMode === "enabled" || (ctx.treatShadowAsEnabled === true && outcome.ruleMode === "shadow"))
+      ? ("pending" as const)
+      : ("simulated" as const);
 
   for (const outcome of outcomes) {
     if (!outcome.matched || !outcome.decision) continue;
     const decision = outcome.decision;
-    const live =
-      ctx.engineMode === "live" &&
-      (outcome.ruleMode === "enabled" || (ctx.treatShadowAsEnabled === true && outcome.ruleMode === "shadow"));
-    const status = live ? "pending" : "simulated";
+    const status = statusOf(outcome);
+    const live = status === "pending";
 
     if (decision.forward) {
       const seen = live ? forwardedLive : forwardedSimulated;
@@ -178,9 +191,6 @@ export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedA
     if (decision.flags.length) {
       actions.push({ ruleId: outcome.ruleId, type: "flags", payload: { flags: decision.flags }, status, note: null });
     }
-    if (decision.markRead) {
-      actions.push({ ruleId: outcome.ruleId, type: "seen", payload: {}, status, note: null });
-    }
     if (decision.moveTo) {
       const already = live ? liveMove : simulatedMove;
       if (already) {
@@ -194,7 +204,19 @@ export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedA
       } else {
         if (live) liveMove = true;
         else simulatedMove = true;
-        actions.push({ ruleId: outcome.ruleId, type: "move", payload: { target: decision.moveTo }, status, note: null });
+        if (sameFolder(decision.moveTo, ctx.folder)) {
+          // A MOVE onto itself gives a new UID, which a watched folder would take for new mail, forever.
+          alreadyInPlace[status] = true;
+          actions.push({
+            ruleId: outcome.ruleId,
+            type: "move",
+            payload: { target: decision.moveTo },
+            status: "skipped",
+            note: "il messaggio è già in questa cartella",
+          });
+        } else {
+          actions.push({ ruleId: outcome.ruleId, type: "move", payload: { target: decision.moveTo }, status, note: null });
+        }
       }
     }
   }
@@ -205,12 +227,23 @@ export function planActions(outcomes: RuleOutcome[], ctx: PlanContext): PlannedA
     actions.push({ ruleId: null, type: "flags", payload: { flags: ["$Forwarded"] }, status: "pending", note: "inoltro automatico" });
   }
   // Once forwarded, the original leaves the inbox: whoever still works it by hand knows it is done.
-  if (ctx.moveAfterForward) {
+  if (ctx.moveAfterForward && !sameFolder(ctx.moveAfterForward, ctx.folder)) {
     if (liveForward && !liveMove) {
       actions.push({ ruleId: null, type: "move", payload: { target: ctx.moveAfterForward }, status: "pending", note: "dopo l'inoltro" });
     } else if (simulatedForward && !liveForward && !simulatedMove) {
       actions.push({ ruleId: null, type: "move", payload: { target: ctx.moveAfterForward }, status: "simulated", note: "dopo l'inoltro" });
     }
+  }
+
+  for (const status of ["pending", "simulated"] as const) {
+    const explicit = outcomes.find(
+      (outcome) => outcome.matched && outcome.decision && outcome.decision.markRead !== null && statusOf(outcome) === status,
+    );
+    const move = actions.find((action) => action.type === "move" && action.status === status);
+    const sorted = move || alreadyInPlace[status] || actions.some((action) => action.type === "forward" && action.status === status);
+    if (!(explicit ? explicit.decision!.markRead : sorted)) continue;
+    if (move) move.payload = { ...move.payload, markRead: true };
+    else actions.push({ ruleId: explicit?.ruleId ?? null, type: "seen", payload: {}, status, note: explicit ? null : "messaggio smistato" });
   }
 
   return actions

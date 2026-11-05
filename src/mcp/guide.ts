@@ -2,8 +2,8 @@
 export const RULE_GUIDE = `# Mail Router
 
 This server runs on a Windows PC next to the mailbox. It watches IMAP folders: every NEW message
-is passed through the forwarding rules (JavaScript you write) and the resulting actions — forward,
-flag, mark read, move — are executed by the service. Through these tools you manage the rules,
+is passed through the rules (JavaScript you write) and the resulting actions — forward, flag,
+mark read, move to a folder — are executed by the service. Through these tools you manage the rules,
 the reference data the rules read, and the mailbox itself. Reply to the user in their language.
 
 ## Engine modes (get_status / set_mode)
@@ -12,6 +12,17 @@ the reference data the rules read, and the mailbox itself. Reply to the user in 
 - live — actions of rules whose mode is "enabled" are executed. Rules in mode "shadow" stay simulated.
 - paused — new messages wait; they are processed on resume unless skipBacklog is true.
 Never switch the engine to live, or a rule to "enabled", unless the user explicitly asks for it.
+
+## Rule lifecycle
+A rule's mode is set with create_rule or update_rule:
+- shadow — draft: it runs on real mail and its decisions are logged, nothing is executed.
+- enabled — published. It executes only while the engine is live.
+- disabled — switched off, not evaluated.
+list_rules shows each rule's \`effect\`, which also accounts for the engine: "live" (executing now),
+"simulated" or "off". list_rules with onlyActive answers "which rules are active?".
+A published rule has no separate draft: new code applies from the next message, so try it first
+with test_rules. get_rule with includeHistory and restore_rule bring back an earlier version,
+along with the mode it had.
 
 ## Rule contract
 The code must define a synchronous function:
@@ -29,8 +40,9 @@ Keep it fast (time limit ~250 ms) and deterministic. \`new Date()\` is available
   sender, replyTo[], to[], cc[], subject, text (plain text, HTML converted, truncated;
   textTruncated tells), attachments [{filename, contentType, size}], headers {lower-case name:
   value, first occurrence}, flags[], size, bulk (List-Unsubscribe / List-Id / Precedence bulk:
-  newsletters, mailing lists), autoSubmitted (auto-replies and automatic notifications),
-  pec (null for ordinary mail — see "PEC mailboxes" below).
+  newsletters, mailing lists; a shared address implemented as a distribution list makes EVERY
+  message bulk, so look at real examples before relying on it), autoSubmitted (auto-replies and
+  automatic notifications), pec (null for ordinary mail — see "PEC mailboxes" below).
 
 \`data\`: every reference entry saved with set_data, by key (e.g. data.uffici, data.personale).
 
@@ -50,8 +62,10 @@ Decision object (every field optional):
            reply go to the original sender; asAttachment true/false overrides the account
            setting (attach the original .eml vs. classic inline forward).
   flags: ["$Keyword"]   IMAP keywords (or "\\\\Flagged") added to the original
-  markRead: true
-  moveTo: "Folder/Path" (use list_folders for exact paths; the move always runs last)
+  moveTo: "Folder/Path" (use list_folders for exact paths; the move always runs last; a folder that
+           does not exist is created, and test_rules reports it under foldersToBeCreated)
+  markRead: true | false   sorted mail (forwarded or moved) is marked read without asking for it:
+           false keeps it unread, true also marks read a message the rule does not sort
   stop: true            lower-priority rules are not evaluated
   reason: "short explanation shown in the activity log"
 
@@ -67,6 +81,15 @@ Semantics:
   when the account has a "move after forward" folder (get_status → accounts), it is moved there
   automatically: do not add moveTo for that. Forwards leave from the account's sending mailbox,
   which for a PEC box is an ordinary "satellite" mailbox.
+- A forward that fails or is blocked holds back what says the message is dealt with: it is not
+  moved, not marked read and gets no $Forwarded, so it stays visible for manual handling.
+  retry_failed runs the forward again, and what it held back with it.
+- A failed move leaves the message unread too. A move to the folder the message is already in does
+  nothing. Only the highest-priority move counts.
+- Every watched folder runs the rules, and a message a person moves into one counts as new there,
+  however old it is. Check email.folder to limit a rule to the folder where mail arrives. A message
+  a rule moved into a watched folder is not evaluated again, so put everything that should happen
+  to it in that one decision.
 - A rule that throws is logged as an error and skipped; the other rules still run.
 
 ## PEC mailboxes
@@ -99,13 +122,20 @@ out of the inbox (when configured), everything else stays for them.
 5. Enable it (mode "enabled") only after the user confirms. list_activity and get_status show
    what happens afterwards; get_rule history allows restore_rule.
 
-Example:
+Examples:
+    // Forward to an office and file the original.
     function rule(email, data, h) {
-      if (email.bulk || email.autoSubmitted) return null;
+      if (email.autoSubmitted) return null;
       if (h.isFrom(email, data.casseEdili)) {
-        return { forward: data.uffici.paghe, reason: "Cassa Edile → ufficio paghe" };
+        return { forward: data.uffici.paghe, moveTo: "Cassa Edile", reason: "Cassa Edile → ufficio paghe" };
       }
       return null;
+    }
+
+    // Only file it, and only for mail arriving in the main folder.
+    function rule(email, data, h) {
+      if (email.folder !== "INBOX") return null;
+      return h.hasWord(email.subject, ["multa", "verbale"]) ? { moveTo: "Multe", reason: "Multa" } : null;
     }
 
 ## Mailbox tools

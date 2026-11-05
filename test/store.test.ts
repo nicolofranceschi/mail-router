@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Store, type ActionInput, type EvaluationInput } from "../src/store";
+import { HELD_BY_FAILED_FORWARD, Store, type ActionInput, type EvaluationInput } from "../src/store";
 
 let store: Store;
 beforeEach(() => {
@@ -100,6 +100,38 @@ describe("evaluations and outbox", () => {
     expect(store.cancelPendingRuleActions("stop")).toBe(2);
     expect(store.getAction(second!.id)!.status).toBe("cancelled");
     expect(store.forwardedRecipients("posta", "<m1@x.it>", "INBOX", 42).size).toBe(0);
+  });
+
+  test("a rule's move is remembered by Message-ID and destination, a manual one is not", () => {
+    const move = action({ type: "move", payload: { target: "Archivio" }, raw: null });
+    const id = store.recordEvaluation(evaluation, [], [move]);
+    expect(store.movedByRuleTo("posta", "<m1@x.it>", "Archivio")).toBe(true);
+    expect(store.movedByRuleTo("posta", "<m1@x.it>", "Altra")).toBe(false);
+    expect(store.movedByRuleTo("posta", "<altro@x.it>", "Archivio")).toBe(false);
+    store.cancelPendingRuleActions("stop");
+    expect(store.movedByRuleTo("posta", "<m1@x.it>", "Archivio")).toBe(false);
+    expect(store.actionsForEvaluation(id)).toHaveLength(1);
+    store.recordEvaluation(evaluation, [], [{ ...move, messageId: "<m2@x.it>", origin: "manual" }]);
+    expect(store.movedByRuleTo("posta", "<m2@x.it>", "Archivio")).toBe(false);
+  });
+
+  test("retrying a failed forward brings back what it held back, and only that", () => {
+    const id = store.recordEvaluation(evaluation, [], [
+      action({}),
+      action({ seq: 1, type: "seen", payload: {}, raw: null }),
+      action({ seq: 2, type: "move", payload: { target: "A" }, raw: null, status: "skipped", lastError: "un'altra regola con priorità più alta sposta già il messaggio" }),
+    ]);
+    const [forward, seen, otherMove] = store.actionsForEvaluation(id);
+    store.finishAction(forward!.id, "error", { error: "550" });
+    store.finishAction(seen!.id, "skipped", { error: HELD_BY_FAILED_FORWARD });
+    const unrelated = store.recordEvaluation({ ...evaluation, uid: 43 }, [], [action({ uid: 43, type: "seen", payload: {}, raw: null })]);
+    store.finishAction(store.actionsForEvaluation(unrelated)[0]!.id, "skipped", { error: HELD_BY_FAILED_FORWARD });
+
+    expect(store.retryErroredActions()).toBe(1);
+    expect(store.getAction(forward!.id)!.status).toBe("pending");
+    expect(store.getAction(seen!.id)!).toMatchObject({ status: "pending", last_error: null });
+    expect(store.getAction(otherMove!.id)!.status).toBe("skipped");
+    expect(store.actionsForEvaluation(unrelated)[0]!.status).toBe("skipped");
   });
 
   test("activity filters by rule and match", () => {

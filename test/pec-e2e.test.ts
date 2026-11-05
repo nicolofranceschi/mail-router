@@ -156,6 +156,6 @@ suite("PEC inbox with a satellite sender (GreenMail)", () => {
       return message ? [...(message.flags ?? [])] : [];
     });
     expect(flags).toContain("$Forwarded");
-    expect(flags).not.toContain("\\Seen");
+    expect(flags).toContain("\\Seen");
   });
 });

@@ -29,6 +29,9 @@ sposti, segni, elimini).
   `null` oppure una decisione (`forward`, `flags`, `markRead`, `moveTo`, `stop`, `reason`). Gira in
   una sandbox QuickJS/WebAssembly senza rete, file o processi, con limiti di tempo e memoria:
   una regola sbagliata non può fare danni né fermare le altre.
+- **Smistata vuol dire letta.** Un messaggio inoltrato o spostato da una regola viene segnato come
+  letto (`markRead: false` lo lascia da leggere). Se l'inoltro o lo spostamento non riesce, resta
+  dov'è e non letto, così chi lavora la cartella lo vede.
 - **Dati separati dal codice.** Elenchi che cambiano (uffici, persone, fornitori) stanno nei
   «dati di riferimento» (`set_data`), che ogni regola riceve come `data`.
 - **Prima si osserva, poi si agisce.** Il motore parte in modalità **ombra**: valuta e registra

@@ -3,12 +3,17 @@ import type { ImapFlow } from "imapflow";
 import { errorMessage, log } from "../log";
 import { appendToSent, createImapClient, sendRaw, type AccountRuntime } from "../mail/clients";
 import { messagePresent, safeMove } from "../mail/move";
-import { nowIso, type ActionRow } from "../store";
+import { HELD_BY_FAILED_FORWARD, nowIso, type ActionRow } from "../store";
 import type { App } from "./app";
 
 const BACKOFF_MINUTES = [1, 2, 5, 15, 30, 60];
 
 export class PermanentError extends Error {}
+
+/** Whatever says the message is dealt with: true only once it has reached its recipients. */
+function dependsOnForward(action: ActionRow): boolean {
+  return action.type === "move" || action.type === "seen" || (action.type === "flags" && action.rule_id === null);
+}
 
 function isPermanent(error: unknown): boolean {
   if (error instanceof PermanentError) return true;
@@ -89,14 +94,12 @@ export class Executor {
     };
     try {
       for (const action of actions) {
-        if (action.type === "forward" && action.status === "error") forwardFailed = true;
+        if (action.type === "forward" && (action.status === "error" || action.status === "blocked")) forwardFailed = true;
         if (action.status !== "pending") continue;
         if (action.next_attempt_at && action.next_attempt_at > nowIso()) break;
         if (this.stopped || this.app.mode !== "live") break;
-        if (action.type === "move" && forwardFailed) {
-          this.app.store.finishAction(action.id, "skipped", {
-            error: "inoltro non riuscito: il messaggio resta nella cartella per la gestione manuale",
-          });
+        if (forwardFailed && dependsOnForward(action)) {
+          this.app.store.finishAction(action.id, "skipped", { error: HELD_BY_FAILED_FORWARD });
           progressed = true;
           continue;
         }
@@ -170,9 +173,13 @@ export class Executor {
           throw new PermanentError("il server ha rifiutato le etichette (permessi di scrittura sulla cartella?)");
         }
         case "move": {
-          const result = await safeMove(client, action.uid, payload.target as string);
+          const result = await safeMove(client, action.uid, payload.target as string, { markRead: payload.markRead === true });
           if (!result.moved) return { note: "messaggio non più presente nella cartella" };
-          return { movedTo: result.target, ...(result.folderCreated ? { folderCreated: true } : {}) };
+          return {
+            movedTo: result.target,
+            ...(result.folderCreated ? { folderCreated: true } : {}),
+            ...(result.markedRead === undefined ? {} : { markedRead: result.markedRead }),
+          };
         }
         default:
           throw new PermanentError(`tipo di azione non eseguibile in coda: ${action.type}`);

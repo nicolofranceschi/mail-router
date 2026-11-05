@@ -2,7 +2,9 @@ import type { ImapFlow } from "imapflow";
 
 import { log } from "../log";
 
-export type MoveResult = { moved: true; target: string; newUid: number | null; folderCreated: boolean } | { moved: false; reason: "missing" };
+export type MoveResult =
+  | { moved: true; target: string; newUid: number | null; folderCreated: boolean; markedRead?: boolean }
+  | { moved: false; reason: "missing" };
 
 /**
  * STATUS on a missing folder throws NotFound (imapflow double-checks with LIST).
@@ -43,8 +45,13 @@ export async function messagePresent(client: ImapFlow, uid: number): Promise<boo
  * succeed before the original is touched, and without UIDPLUS no plain
  * EXPUNGE is sent — it would also purge messages another client (Outlook)
  * merely marked as deleted.
+ *
+ * With `markRead`, \Seen is set just before the move: flags travel with the
+ * message, while its new UID may stay unknown. If the move fails the flag is
+ * taken back, so a message left behind still looks unread to whoever works the
+ * folder. A refused \Seen does not stop the move (`markedRead: false`).
  */
-export async function safeMove(client: ImapFlow, uid: number, target: string): Promise<MoveResult> {
+export async function safeMove(client: ImapFlow, uid: number, target: string, options: { markRead?: boolean } = {}): Promise<MoveResult> {
   // Look for the message before any command on another folder, and create nothing for a message that is gone.
   if (!(await messagePresent(client, uid))) return { moved: false, reason: "missing" };
 
@@ -56,10 +63,28 @@ export async function safeMove(client: ImapFlow, uid: number, target: string): P
     log.info(`cartella «${target}» creata`);
   }
 
+  const current = options.markRead ? await client.fetchOne(String(uid), { uid: true, flags: true }, { uid: true }) : false;
+  const wasRead = Boolean(current && current.flags?.has("\\Seen"));
+  const flagged = Boolean(options.markRead && !wasRead && (await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true })));
+  const read = options.markRead ? { markedRead: wasRead || flagged } : {};
+
+  try {
+    return { moved: true, target, newUid: await moveOrCopy(client, uid, target), folderCreated, ...read };
+  } catch (error) {
+    if (flagged) {
+      await client
+        .messageFlagsRemove(String(uid), ["\\Seen"], { uid: true })
+        .catch((undo) => log.warn(`UID ${uid} non spostato e rimasto segnato come letto`, undo));
+    }
+    throw error;
+  }
+}
+
+async function moveOrCopy(client: ImapFlow, uid: number, target: string): Promise<number | null> {
   if (client.capabilities.has("MOVE")) {
     const moved = await client.messageMove(String(uid), target, { uid: true });
     if (!moved) throw new Error(`Spostamento in «${target}» rifiutato dal server`);
-    return { moved: true, target, newUid: moved.uidMap?.get(uid) ?? null, folderCreated };
+    return moved.uidMap?.get(uid) ?? null;
   }
 
   const copied = await client.messageCopy(String(uid), target, { uid: true });
@@ -70,5 +95,5 @@ export async function safeMove(client: ImapFlow, uid: number, target: string): P
     await client.messageFlagsAdd(String(uid), ["\\Deleted"], { uid: true });
     log.warn(`il server non supporta UIDPLUS: l'originale UID ${uid} è segnato come eliminato ma non rimosso`);
   }
-  return { moved: true, target, newUid: copied.uidMap?.get(uid) ?? null, folderCreated };
+  return copied.uidMap?.get(uid) ?? null;
 }

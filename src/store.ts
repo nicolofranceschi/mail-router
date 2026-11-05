@@ -6,6 +6,8 @@ import path from "node:path";
 
 export type RuleMode = "enabled" | "shadow" | "disabled";
 export type EngineMode = "live" | "shadow" | "paused";
+/** Why an action waits on a forward that did not go out; retry_failed runs it again with the forward. */
+export const HELD_BY_FAILED_FORWARD = "inoltro non riuscito: il messaggio resta nella cartella, non letto, per la gestione manuale";
 export type ActionType = "forward" | "flags" | "unflags" | "seen" | "move" | "reply" | "send";
 export type ActionStatus =
   | "pending"
@@ -684,6 +686,18 @@ export class Store {
     return recipients;
   }
 
+  /** True when a rule moved this message (or is moving it: the watcher may see it first) into the folder. */
+  movedByRuleTo(account: string, messageId: string, folder: string): boolean {
+    const rows = this.db
+      .query(
+        `SELECT payload FROM actions
+         WHERE type = 'move' AND origin = 'rule' AND status IN ('pending', 'running', 'done')
+           AND account = $account AND message_id = $messageId`,
+      )
+      .all({ account, messageId }) as { payload: string }[];
+    return rows.some((row) => (JSON.parse(row.payload) as { target?: string }).target === folder);
+  }
+
   dueEvaluationIds(limit = 20): number[] {
     const rows = this.db
       .query(
@@ -747,12 +761,23 @@ export class Store {
 
   retryErroredActions(id?: number): number {
     const where = id === undefined ? "" : " AND id = $id";
-    return this.db
-      .query(
-        `UPDATE actions SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL, updated_at = $now
-         WHERE origin = 'rule' AND status = 'error'${where}`,
-      )
-      .run(id === undefined ? { now: nowIso() } : { id, now: nowIso() }).changes;
+    const selected: Record<string, number> = id === undefined ? {} : { id };
+    const now = nowIso();
+    return this.db.transaction(() => {
+      this.db
+        .query(
+          `UPDATE actions SET status = 'pending', next_attempt_at = NULL, last_error = NULL, updated_at = $now
+           WHERE origin = 'rule' AND status = 'skipped' AND last_error = $held AND evaluation_id IN (
+             SELECT evaluation_id FROM actions WHERE origin = 'rule' AND status = 'error' AND type = 'forward'${where})`,
+        )
+        .run({ ...selected, now, held: HELD_BY_FAILED_FORWARD });
+      return this.db
+        .query(
+          `UPDATE actions SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL, updated_at = $now
+           WHERE origin = 'rule' AND status = 'error'${where}`,
+        )
+        .run({ ...selected, now }).changes;
+    })();
   }
 
   outboxCounts(): Record<string, number> {

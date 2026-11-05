@@ -124,7 +124,7 @@ suite("end to end (GreenMail)", () => {
             password: "env:MR_TEST_SMTP_PASSWORD",
             from: "Smistamento <info@azienda.it>",
           },
-          watch: ["INBOX"],
+          watch: ["INBOX", "Archivio"],
           ownAddresses: ["info@azienda.it"],
           sentFolder: "Sent",
           trashFolder: "Trash",
@@ -140,7 +140,7 @@ suite("end to end (GreenMail)", () => {
     token = rotateToken(app.store);
     server = startServer(app);
     app.startBackground();
-    await until("watcher connected", async () => app.watchers[0]?.snapshot().connected);
+    await until("watchers connected", async () => app.watchers.every((watcher) => watcher.snapshot().connected));
 
     client = new Client({ name: "e2e", version: "1.0.0" });
     await client.connect(
@@ -200,6 +200,7 @@ suite("end to end (GreenMail)", () => {
     expect(activity.actions.map((action: any) => [action.type, action.status])).toEqual([
       ["forward", "simulated"],
       ["flags", "simulated"],
+      ["seen", "simulated"],
     ]);
     expect(await subjects("paghe@azienda.it")).toEqual([]);
   });
@@ -217,10 +218,14 @@ suite("end to end (GreenMail)", () => {
     expect(report.tested).toBe(2);
     expect(report.matched).toBe(1);
     expect(report.results[0].subject).toBe("Offerte di ottobre");
-    expect(report.results[0].wouldDo).toEqual([{ type: "move", status: "eseguirebbe", target: "Archivio" }]);
+    expect(report.results[0].wouldDo).toEqual([{ type: "move", status: "eseguirebbe", target: "Archivio", markRead: true }]);
+    expect(report.foldersToBeCreated).toBeUndefined();
+
+    const typo = await call("test_rules", { code: "function rule(email) { return email.bulk ? { moveTo: 'Archivo' } : null }", last: 10 });
+    expect(typo.foldersToBeCreated).toEqual(["Archivo"]);
   });
 
-  test("live mode: forward is sent, flags set, copy saved, original untouched otherwise", async () => {
+  test("live mode: forward is sent, flags set, copy saved, original marked read", async () => {
     await call("update_rule", { id: ruleId, mode: "enabled" });
     await call("create_rule", {
       name: "Newsletter in archivio",
@@ -240,7 +245,7 @@ suite("end to end (GreenMail)", () => {
       const entry = result.activity.find((item: any) => item.message.subject === "Avviso versamento ottobre");
       return entry && entry.actions.every((action: any) => action.status === "done") ? entry : null;
     });
-    expect(activity.actions.map((action: any) => action.type)).toEqual(["forward", "flags", "flags"]);
+    expect(activity.actions.map((action: any) => action.type)).toEqual(["forward", "flags", "flags", "seen"]);
 
     const flags = await mailbox("info@azienda.it", "INBOX", async (imap) => {
       const uids = (await imap.search({ subject: "Avviso versamento ottobre" }, { uid: true })) || [];
@@ -249,7 +254,7 @@ suite("end to end (GreenMail)", () => {
     });
     expect(flags).toContain("$Forwarded");
     expect(flags).toContain("$Paghe");
-    expect(flags).not.toContain("\\Seen");
+    expect(flags).toContain("\\Seen");
 
     expect(await subjects("info@azienda.it", "Sent")).toContain("I: Avviso versamento ottobre");
     await until("newsletter archived", async () => (await subjects("info@azienda.it", "Archivio")).includes("Offerte di novembre"));
@@ -262,6 +267,65 @@ suite("end to end (GreenMail)", () => {
     expect(forwarded).toContain("X-Mail-Router-Instance");
     expect(forwarded).toContain("distinta.pdf");
     expect(forwarded).toContain("Inoltro automatico");
+  });
+
+  async function inArchive(subject: string) {
+    return mailbox("info@azienda.it", "Archivio", async (imap) => {
+      const uids = (await imap.search({ subject }, { uid: true })) || [];
+      const message = uids[0] ? await imap.fetchOne(String(uids[0]), { uid: true, flags: true }, { uid: true }) : false;
+      return message ? { copies: uids.length, uid: message.uid, flags: [...(message.flags ?? [])] } : null;
+    });
+  }
+
+  test("a message moved into a watched folder arrives read and is not evaluated again", async () => {
+    const before = await until("newsletter in archive", () => inArchive("Offerte di novembre"));
+    expect(before.flags).toContain("\\Seen");
+    const arrival = await until("arrival logged", async () => {
+      const result = await call("list_activity", { folder: "Archivio" });
+      return result.activity.find((entry: any) => entry.message.subject === "Offerte di novembre");
+    });
+    expect(arrival.note).toContain("non viene rielaborato");
+    expect(arrival.actions).toEqual([]);
+    await Bun.sleep(1500);
+    expect(await inArchive("Offerte di novembre")).toEqual(before);
+  });
+
+  test("a rule's move onto the folder a message is already in only marks it read", async () => {
+    await call("create_rule", {
+      name: "Resta qui",
+      description: "Prova dello spostamento sulla stessa cartella",
+      priority: 2,
+      mode: "enabled",
+      code: "function rule(email) { return email.subject === 'Gia in archivio' ? { moveTo: 'Archivio' } : null }",
+    });
+    await mailbox("info@azienda.it", "Archivio", (imap) =>
+      imap.append("Archivio", "From: x@altro.it\r\nTo: info@azienda.it\r\nSubject: Gia in archivio\r\nMessage-ID: <gia-in-archivio@altro.it>\r\n\r\nTesto\r\n"),
+    );
+    const entry = await until("actions finished", async () => {
+      const result = await call("list_activity", { folder: "Archivio", onlyMatched: true });
+      const found = result.activity.find((item: any) => item.message.subject === "Gia in archivio");
+      return found && found.actions.every((action: any) => action.status !== "pending" && action.status !== "running") ? found : null;
+    });
+    expect(entry.actions.map((action: any) => [action.type, action.status])).toEqual([
+      ["seen", "done"],
+      ["move", "skipped"],
+    ]);
+    const after = await inArchive("Gia in archivio");
+    expect(after).toMatchObject({ copies: 1, uid: entry.message.uid });
+    expect(after!.flags).toContain("\\Seen");
+  });
+
+  test("a rule can keep sorted mail unread", async () => {
+    await call("create_rule", {
+      name: "Da leggere",
+      description: "Prova di markRead false",
+      priority: 3,
+      mode: "enabled",
+      code: "function rule(email) { return email.subject === 'Tienila non letta' ? { moveTo: 'Archivio', markRead: false } : null }",
+    });
+    await send({ from: "x@altro.it", subject: "Tienila non letta", text: "x" });
+    const archived = await until("moved unread", () => inArchive("Tienila non letta"));
+    expect(archived.flags).not.toContain("\\Seen");
   });
 
   test("reprocessing does not forward the same message twice", async () => {
@@ -324,6 +388,26 @@ suite("end to end (GreenMail)", () => {
     const status = await call("get_status");
     expect(status.mode).toBe("shadow");
     expect(status.watchers[0].connected).toBe(true);
+  });
+
+  test("active rules: only what is executing right now, engine included", async () => {
+    await call("set_mode", { mode: "live" });
+    const enabled = (await call("list_rules")).rules.filter((rule: any) => rule.mode === "enabled");
+    const live = await call("list_rules", { onlyActive: true });
+    expect(enabled.length).toBeGreaterThan(0);
+    expect(live.rules.map((rule: any) => rule.id)).toEqual(enabled.map((rule: any) => rule.id));
+    expect(live.rules.every((rule: any) => rule.effect === "live")).toBe(true);
+
+    const draft = await call("create_rule", { name: "Bozza", description: "", code: "function rule() { return null }" });
+    expect(draft.created.effect).toBe("simulated");
+    const published = await call("update_rule", { id: draft.created.id, mode: "enabled" });
+    expect(published.updated.effect).toBe("live");
+    expect(published.note).toContain("attiva");
+    await call("update_rule", { id: draft.created.id, mode: "disabled" });
+    expect((await call("get_rule", { id: draft.created.id })).effect).toBe("off");
+
+    await call("set_mode", { mode: "shadow" });
+    expect((await call("list_rules", { onlyActive: true })).rules).toEqual([]);
   });
 
   test("rules can be deleted and restored", async () => {

@@ -66,6 +66,13 @@ export async function processMessage(
     return { evaluationId, email: null, outcomes: [], actions: [], note };
   }
 
+  // One message, one pass: what a rule moved into a watched folder is not new mail there.
+  if (origin === "watch" && parsed.messageId && app.store.movedByRuleTo(accountConfig.id, parsed.messageId, message.folder)) {
+    const note = "spostato qui da una regola: non viene rielaborato";
+    const evaluationId = app.store.recordEvaluation({ ...base, matched: false, note }, [], [], watermark);
+    return { evaluationId, email: null, outcomes: [], actions: [], note };
+  }
+
   const email = await buildRuleEmail(
     parsed,
     {
@@ -80,6 +87,7 @@ export async function processMessage(
   );
   const outcomes = evaluateRules(app.sandbox, app.engineRules(), email, app.store.dataObject(), app.config.engine.ruleTimeoutMs);
   const plan = planActions(outcomes, {
+    folder: message.folder,
     engineMode: app.mode,
     allowedDomains: app.config.outbound.allowedDomains,
     ownAddresses: app.ownAddresses(message.account),
@@ -198,6 +206,7 @@ export async function simulateMessage(
   );
   const outcomes = evaluateRules(app.sandbox, rules, email, app.store.dataObject(), app.config.engine.ruleTimeoutMs);
   const plan = planActions(outcomes, {
+    folder: message.folder,
     engineMode: "live",
     treatShadowAsEnabled: true,
     allowedDomains: app.config.outbound.allowedDomains,

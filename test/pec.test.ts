@@ -90,7 +90,7 @@ describe("PEC", () => {
       durationMs: 1,
       decision: { forward: { to: ["legale@azienda.it"], cc: [], note: null, asAttachment: null, replyToSender: false }, flags: [], markRead: false, moveTo: null, stop: false, reason: null },
     };
-    const context = { allowedDomains: ["azienda.it"], ownAddresses: [], alreadyForwarded: new Set<string>(), markForwarded: true, moveAfterForward: "Inoltrate" };
+    const context = { folder: "INBOX", allowedDomains: ["azienda.it"], ownAddresses: [], alreadyForwarded: new Set<string>(), markForwarded: true, moveAfterForward: "Inoltrate" };
     const live = planActions([outcome], { ...context, engineMode: "live" });
     expect(live.map((action) => [action.type, action.status, action.payload.target ?? null])).toEqual([
       ["forward", "pending", null],

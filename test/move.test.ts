@@ -10,10 +10,25 @@ function fakeClient(options: {
   status?: "ok" | "refused";
   emptyFetch?: boolean;
   searchFails?: boolean;
+  flags?: string[];
+  storeRefused?: boolean;
+  moveRefused?: boolean;
 }) {
   const calls: string[] = [];
   const folders = new Set(options.folders);
+  const flags = new Set(options.flags ?? []);
   const client = {
+    async messageFlagsAdd(uid: string, added: string[]) {
+      calls.push(`STORE ${uid} +${added.join(" ")}`);
+      if (options.storeRefused) return false;
+      for (const flag of added) flags.add(flag);
+      return true;
+    },
+    async messageFlagsRemove(uid: string, removed: string[]) {
+      calls.push(`STORE ${uid} -${removed.join(" ")}`);
+      for (const flag of removed) flags.delete(flag);
+      return true;
+    },
     capabilities: new Set(["MOVE"]),
     async status(path: string) {
       calls.push(`STATUS ${path}`);
@@ -32,7 +47,7 @@ function fakeClient(options: {
     },
     async fetchOne(uid: string) {
       calls.push(`FETCH ${uid}`);
-      return !options.emptyFetch && options.uids.includes(Number(uid)) ? { uid: Number(uid) } : false;
+      return !options.emptyFetch && options.uids.includes(Number(uid)) ? { uid: Number(uid), flags } : false;
     },
     async search(query: { uid: string }) {
       calls.push(`SEARCH UID ${query.uid}`);
@@ -41,11 +56,11 @@ function fakeClient(options: {
     },
     async messageMove(uid: string, target: string) {
       calls.push(`MOVE ${uid} ${target}`);
-      if (!folders.has(target)) return false;
+      if (options.moveRefused || !folders.has(target)) return false;
       return { path: "INBOX", destination: target, uidMap: new Map([[Number(uid), 7]]) };
     },
   };
-  return { client: client as unknown as ImapFlow, calls, folders };
+  return { client: client as unknown as ImapFlow, calls, folders, flags };
 }
 
 describe("folderExists", () => {
@@ -82,5 +97,38 @@ describe("safeMove", () => {
     const { client, calls } = fakeClient({ folders: ["INBOX"], uids: [] });
     expect(await safeMove(client, 42, "INBOX/Pineapp")).toEqual({ moved: false, reason: "missing" });
     expect(calls).toEqual(["FETCH 42", "SEARCH UID 42"]);
+  });
+
+  test("markRead sets \\Seen right before the move", async () => {
+    const { client, calls, flags } = fakeClient({ folders: ["Archivio"], uids: [42] });
+    expect(await safeMove(client, 42, "Archivio", { markRead: true })).toMatchObject({ moved: true, markedRead: true });
+    expect(flags.has("\\Seen")).toBe(true);
+    expect(calls.slice(-2)).toEqual(["STORE 42 +\\Seen", "MOVE 42 Archivio"]);
+  });
+
+  test("without markRead the read state is left alone", async () => {
+    const { client, calls, flags } = fakeClient({ folders: ["Archivio"], uids: [42] });
+    expect(await safeMove(client, 42, "Archivio")).toEqual({ moved: true, target: "Archivio", newUid: 7, folderCreated: false });
+    expect(flags.size).toBe(0);
+    expect(calls.some((call) => call.startsWith("STORE"))).toBe(false);
+  });
+
+  test("a move that fails leaves the message unread again", async () => {
+    const { client, flags } = fakeClient({ folders: ["Archivio"], uids: [42], moveRefused: true });
+    await expect(safeMove(client, 42, "Archivio", { markRead: true })).rejects.toThrow("rifiutato");
+    expect(flags.has("\\Seen")).toBe(false);
+  });
+
+  test("a move that fails does not unread what someone had already read", async () => {
+    const { client, calls, flags } = fakeClient({ folders: ["Archivio"], uids: [42], moveRefused: true, flags: ["\\Seen"] });
+    await expect(safeMove(client, 42, "Archivio", { markRead: true })).rejects.toThrow("rifiutato");
+    expect(flags.has("\\Seen")).toBe(true);
+    expect(calls.some((call) => call.startsWith("STORE"))).toBe(false);
+  });
+
+  test("a refused \\Seen does not stop the move, and is reported", async () => {
+    const { client, calls } = fakeClient({ folders: ["Archivio"], uids: [42], storeRefused: true });
+    expect(await safeMove(client, 42, "Archivio", { markRead: true })).toMatchObject({ moved: true, markedRead: false });
+    expect(calls.at(-1)).toBe("MOVE 42 Archivio");
   });
 });

@@ -120,6 +120,7 @@ function rule(id: string, code: string, mode: EngineRule["mode"] = "enabled"): E
 }
 
 const context: PlanContext = {
+  folder: "INBOX",
   engineMode: "live",
   allowedDomains: ["azienda.it"],
   ownAddresses: ["info@azienda.it"],
@@ -178,12 +179,73 @@ describe("engine", () => {
   test("shadow engine simulates everything and adds no $Forwarded", () => {
     const outcomes = evaluateRules(sandbox, [rule("a", "function rule() { return { forward: 'paghe@azienda.it' } }")], email, {}, 250);
     const plan = planActions(outcomes, { ...context, engineMode: "shadow" });
-    expect(plan.map((action) => action.status)).toEqual(["simulated"]);
+    expect(plan.map((action) => [action.type, action.status])).toEqual([
+      ["forward", "simulated"],
+      ["seen", "simulated"],
+    ]);
   });
 
   test("recipients already reached are not forwarded again", () => {
     const outcomes = evaluateRules(sandbox, [rule("a", "function rule() { return { forward: 'paghe@azienda.it' } }")], email, {}, 250);
     const plan = planActions(outcomes, { ...context, alreadyForwarded: new Set(["paghe@azienda.it"]) });
     expect(plan.map((action) => action.status)).toEqual(["skipped"]);
+  });
+
+  const planFor = (...rules: EngineRule[]) => planActions(evaluateRules(sandbox, rules, email, {}, 250), context);
+  const summary = (plan: ReturnType<typeof planActions>) => plan.map((action) => [action.type, action.status, action.payload.markRead ?? null]);
+
+  test("sorted mail is marked read: on the move, or on its own when it stays in the folder", () => {
+    expect(summary(planFor(rule("a", "function rule() { return { moveTo: 'Archivio' } }")))).toEqual([["move", "pending", true]]);
+    expect(summary(planFor(rule("a", "function rule() { return { forward: 'paghe@azienda.it' } }")))).toEqual([
+      ["forward", "pending", null],
+      ["flags", "pending", null],
+      ["seen", "pending", null],
+    ]);
+  });
+
+  test("a rule that sorts nothing leaves the read state alone, unless it asks", () => {
+    expect(planFor(rule("a", "function rule() { return { flags: ['$X'], stop: true } }")).map((action) => action.type)).toEqual(["flags"]);
+    expect(planFor(rule("a", "function rule() { return { markRead: true } }")).map((action) => [action.type, action.ruleId])).toEqual([["seen", "a"]]);
+  });
+
+  test("markRead: false keeps sorted mail unread; the highest-priority opinion wins", () => {
+    expect(summary(planFor(rule("a", "function rule() { return { moveTo: 'Archivio', markRead: false } }")))).toEqual([["move", "pending", null]]);
+    const mixed = planFor(
+      rule("a", "function rule() { return { markRead: false } }"),
+      rule("b", "function rule() { return { forward: 'paghe@azienda.it', markRead: true } }"),
+    );
+    expect(mixed.some((action) => action.type === "seen")).toBe(false);
+  });
+
+  test("a shadow rule's opinion does not touch what enabled rules execute", () => {
+    const plan = planFor(
+      rule("shadow", "function rule() { return { markRead: false } }", "shadow"),
+      rule("a", "function rule() { return { moveTo: 'Archivio' } }"),
+    );
+    expect(summary(plan)).toEqual([["move", "pending", true]]);
+  });
+
+  test("a blocked forward alone does not count as sorted", () => {
+    expect(planFor(rule("a", "function rule() { return { forward: 'x@esterno.com' } }")).map((action) => [action.type, action.status])).toEqual([
+      ["forward", "blocked"],
+    ]);
+  });
+
+  test("moving a message to its own folder does nothing, keeps its slot, and still marks it read", () => {
+    const plan = planFor(
+      rule("here", "function rule() { return { moveTo: 'inbox' } }"),
+      rule("later", "function rule() { return { moveTo: 'Archivio' } }"),
+    );
+    expect(plan.map((action) => [action.type, action.ruleId, action.status])).toEqual([
+      ["seen", null, "pending"],
+      ["move", "here", "skipped"],
+      ["move", "later", "skipped"],
+    ]);
+  });
+
+  test("the move-after-forward folder is not a move for a message already there", () => {
+    const outcomes = evaluateRules(sandbox, [rule("a", "function rule() { return { forward: 'paghe@azienda.it' } }")], email, {}, 250);
+    const plan = planActions(outcomes, { ...context, moveAfterForward: "INBOX" });
+    expect(plan.map((action) => action.type)).toEqual(["forward", "flags", "seen"]);
   });
 });

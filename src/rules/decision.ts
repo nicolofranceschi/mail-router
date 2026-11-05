@@ -4,7 +4,8 @@ import { z } from "zod";
 export interface Decision {
   forward: ForwardRequest | null;
   flags: string[];
-  markRead: boolean;
+  /** null: the default applies, which marks sorted mail (moved or forwarded) as read. */
+  markRead: boolean | null;
   moveTo: string | null;
   stop: boolean;
   reason: string | null;
@@ -106,7 +107,7 @@ export function parseDecision(value: unknown): ParsedDecision {
           }
         : null,
       flags: [...new Set(parsed.flags ?? [])],
-      markRead: parsed.markRead === true,
+      markRead: parsed.markRead ?? null,
       moveTo: parsed.moveTo ?? null,
       stop: parsed.stop === true,
       reason: parsed.reason ?? null,
