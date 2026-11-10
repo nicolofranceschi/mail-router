@@ -147,9 +147,9 @@ export interface RuleResultRow {
   duration_ms: number;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
-const MIGRATIONS: Record<number, string> = {
+export const MIGRATIONS: Record<number, string> = {
   1: `
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
@@ -261,7 +261,37 @@ const MIGRATIONS: Record<number, string> = {
       expires_at TEXT NOT NULL
     );
   `,
+  // Users: each with an own access key (only its SHA-256) and a role. The old
+  // single key becomes the first administrator; sessions without a user are dropped.
+  3: `
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      role TEXT NOT NULL CHECK (role IN ('admin', 'operator')),
+      key_hash TEXT NOT NULL UNIQUE,
+      key_hint TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      last_used_at TEXT
+    );
+    INSERT INTO users (id, name, role, key_hash, key_hint, created_at)
+      SELECT 'u_admin', 'Amministratore', 'admin', value, '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM meta WHERE key = 'mcp_token_sha256';
+    DELETE FROM meta WHERE key = 'mcp_token_sha256';
+    DELETE FROM ui_sessions;
+    ALTER TABLE ui_sessions ADD COLUMN user_id TEXT REFERENCES users (id) ON DELETE CASCADE;
+  `,
 };
+
+export type UserRole = "admin" | "operator";
+
+export interface UserRow {
+  id: string;
+  name: string;
+  role: UserRole;
+  key_hint: string;
+  created_at: string;
+  last_used_at: string | null;
+}
 
 /**
  * SQLite reports a missing folder, a permission problem and a locked file all
@@ -348,31 +378,112 @@ export class Store {
 
   // ---- panel sessions ---------------------------------------------------
 
-  /** Stores only the hash of a session or one-time login token. */
-  addUiToken(tokenHash: string, kind: "session" | "once", ttlMs: number): void {
+  /** Stores only the hash of a session or one-time login token, tied to the user it logs in. */
+  addUiToken(tokenHash: string, kind: "session" | "once", ttlMs: number, userId: string): void {
     const now = new Date();
     this.db
       .query(
-        `INSERT INTO ui_sessions (token_hash, kind, created_at, expires_at) VALUES ($tokenHash, $kind, $created, $expires)
+        `INSERT INTO ui_sessions (token_hash, kind, created_at, expires_at, user_id) VALUES ($tokenHash, $kind, $created, $expires, $userId)
          ON CONFLICT (token_hash) DO NOTHING`,
       )
-      .run({ tokenHash, kind, created: now.toISOString(), expires: new Date(now.getTime() + ttlMs).toISOString() });
+      .run({ tokenHash, kind, created: now.toISOString(), expires: new Date(now.getTime() + ttlMs).toISOString(), userId });
     this.db.query("DELETE FROM ui_sessions WHERE expires_at < $now").run({ now: now.toISOString() });
   }
 
-  hasUiToken(tokenHash: string, kind: "session" | "once"): boolean {
-    return Boolean(
-      this.db
-        .query("SELECT 1 FROM ui_sessions WHERE token_hash = $tokenHash AND kind = $kind AND expires_at > $now")
-        .get({ tokenHash, kind, now: nowIso() }),
+  /** The user a valid session or one-time token belongs to, or null. */
+  uiTokenUser(tokenHash: string, kind: "session" | "once"): UserRow | null {
+    return (
+      (this.db
+        .query(
+          `SELECT u.id, u.name, u.role, u.key_hint, u.created_at, u.last_used_at
+           FROM ui_sessions s JOIN users u ON u.id = s.user_id
+           WHERE s.token_hash = $tokenHash AND s.kind = $kind AND s.expires_at > $now`,
+        )
+        .get({ tokenHash, kind, now: nowIso() }) as UserRow | null) ?? null
     );
   }
 
-  /** A one-time token works once: consuming it deletes it. */
-  consumeUiToken(tokenHash: string, kind: "once"): boolean {
-    const found = this.hasUiToken(tokenHash, kind);
-    if (found) this.removeUiToken(tokenHash);
-    return found;
+  hasUiToken(tokenHash: string, kind: "session" | "once"): boolean {
+    return this.uiTokenUser(tokenHash, kind) !== null;
+  }
+
+  /** A one-time token works once: consuming it deletes it and returns its user. */
+  consumeUiToken(tokenHash: string, kind: "once"): UserRow | null {
+    const user = this.uiTokenUser(tokenHash, kind);
+    if (user) this.removeUiToken(tokenHash);
+    return user;
+  }
+
+  // ---- users ------------------------------------------------------------
+
+  listUsers(): UserRow[] {
+    return this.db
+      .query("SELECT id, name, role, key_hint, created_at, last_used_at FROM users ORDER BY role ASC, name COLLATE NOCASE ASC")
+      .all() as UserRow[];
+  }
+
+  getUser(id: string): UserRow | null {
+    return (
+      (this.db.query("SELECT id, name, role, key_hint, created_at, last_used_at FROM users WHERE id = $id").get({ id }) as UserRow | null) ??
+      null
+    );
+  }
+
+  userByKeyHash(keyHash: string): UserRow | null {
+    return (
+      (this.db
+        .query("SELECT id, name, role, key_hint, created_at, last_used_at FROM users WHERE key_hash = $keyHash")
+        .get({ keyHash }) as UserRow | null) ?? null
+    );
+  }
+
+  /** The longest-standing administrator: the one the CLI and the desktop shortcut act as. */
+  mainAdmin(): UserRow | null {
+    return (
+      (this.db
+        .query("SELECT id, name, role, key_hint, created_at, last_used_at FROM users WHERE role = 'admin' ORDER BY created_at ASC, id ASC LIMIT 1")
+        .get() as UserRow | null) ?? null
+    );
+  }
+
+  countUsers(role?: UserRole): number {
+    const row = (role
+      ? this.db.query("SELECT COUNT(*) AS n FROM users WHERE role = $role").get({ role })
+      : this.db.query("SELECT COUNT(*) AS n FROM users").get()) as { n: number };
+    return row.n;
+  }
+
+  createUser(input: { id: string; name: string; role: UserRole; keyHash: string; keyHint: string }): UserRow {
+    this.db
+      .query(
+        `INSERT INTO users (id, name, role, key_hash, key_hint, created_at)
+         VALUES ($id, $name, $role, $keyHash, $keyHint, $created)`,
+      )
+      .run({ ...input, created: nowIso() });
+    return this.getUser(input.id)!;
+  }
+
+  updateUser(id: string, patch: { name?: string; role?: UserRole }): UserRow | null {
+    const current = this.getUser(id);
+    if (!current) return null;
+    this.db
+      .query("UPDATE users SET name = $name, role = $role WHERE id = $id")
+      .run({ id, name: patch.name ?? current.name, role: patch.role ?? current.role });
+    return this.getUser(id);
+  }
+
+  setUserKey(id: string, keyHash: string, keyHint: string): boolean {
+    return this.db.query("UPDATE users SET key_hash = $keyHash, key_hint = $keyHint WHERE id = $id").run({ id, keyHash, keyHint }).changes > 0;
+  }
+
+  /** Removes the user and, through the foreign key, every panel session they had open. */
+  deleteUser(id: string): boolean {
+    this.db.query("DELETE FROM ui_sessions WHERE user_id = $id").run({ id });
+    return this.db.query("DELETE FROM users WHERE id = $id").run({ id }).changes > 0;
+  }
+
+  touchUser(id: string): void {
+    this.db.query("UPDATE users SET last_used_at = $now WHERE id = $id").run({ id, now: nowIso() });
   }
 
   removeUiToken(tokenHash: string): void {
@@ -582,6 +693,20 @@ export class Store {
       .query("SELECT uid_validity, last_uid FROM watch_state WHERE watch_id = $watchId")
       .get({ watchId }) as { uid_validity: string; last_uid: number } | null;
     return row ? { uidValidity: row.uid_validity, lastUid: row.last_uid } : null;
+  }
+
+  /**
+   * Forgets where removed mailboxes' folders had got to (watch ids are «account:folder»):
+   * a mailbox added again starts from new mail instead of everything since it was removed.
+   */
+  forgetWatchStatesExcept(accountIds: string[]): number {
+    const rows = this.db.query("SELECT watch_id FROM watch_state").all() as { watch_id: string }[];
+    let removed = 0;
+    for (const { watch_id: watchId } of rows) {
+      if (accountIds.some((id) => watchId.startsWith(`${id}:`))) continue;
+      removed += this.db.query("DELETE FROM watch_state WHERE watch_id = $watchId").run({ watchId }).changes;
+    }
+    return removed;
   }
 
   setWatchState(watchId: string, uidValidity: string, lastUid: number): void {

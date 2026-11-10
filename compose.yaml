@@ -1,0 +1,24 @@
+services:
+  mail-router:
+    build: .
+    image: mail-router:latest
+    container_name: mail-router
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${MAIL_ROUTER_PUBLISH:-8787}:8787"
+    environment:
+      # Required: decrypts the mailbox passwords in config.json. Generate with
+      #   docker compose run --rm mail-router genkey
+      # and keep a copy outside this server: without it the passwords must be typed again.
+      MAIL_ROUTER_MASTER_KEY: ${MAIL_ROUTER_MASTER_KEY:?imposta MAIL_ROUTER_MASTER_KEY nel file .env}
+      # Address shown in the connection instructions, e.g. http://pc70z.zini.locale:8787
+      MAIL_ROUTER_PUBLIC_URL: ${MAIL_ROUTER_PUBLIC_URL:-}
+      TZ: Europe/Rome
+    volumes:
+      - mail-router-data:/data
+    stop_grace_period: 30s
+
+volumes:
+  mail-router-data:
+    name: mail-router-data

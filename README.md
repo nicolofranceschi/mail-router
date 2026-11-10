@@ -1,24 +1,23 @@
 # Mail Router
 
-Servizio Windows in background che sorveglia una casella IMAP e **inoltra in automatico** la
-posta secondo regole scritte in codice da Claude. Ha un **pannello di controllo** (finestra sul PC
-o browser dalla rete) e un **server MCP**: dal tuo PC colleghi Claude e, parlando in italiano,
-aggiungi, modifichi o togli regole e gestisci la casella (leggi, cerchi, inoltri, rispondi,
-sposti, segni, elimini).
+Servizio in un container Docker che sorveglia caselle IMAP e **inoltra in automatico** la
+posta secondo regole scritte in codice da Claude. Ha un **pannello di controllo** (browser dalla
+rete) e un **server MCP**: dal tuo PC colleghi Claude e, parlando in italiano, aggiungi,
+modifichi o togli regole e gestisci la casella (leggi, cerchi, inoltri, rispondi, sposti, segni,
+elimini).
 
 ```
  Server di posta (IMAP/SMTP)
           ▲  IDLE + polling, lettura senza segnare come letto
           │
- ┌────────┴──────── PC Windows in ufficio ─────────────────────┐
- │ mail-router.exe (attività pianificata, utente SYSTEM)       │
+ ┌────────┴──────── container mail-router (Docker) ────────────┐
  │   monitor IMAP → regole JS in sandbox QuickJS → decisione  │
  │   coda azioni (inoltro, flag, letto, sposta) con retry     │
- │   SQLite: regole + versioni, dati, storico, coda           │
+ │   SQLite nel volume /data: regole, dati, storico, coda     │
  │   pannello :8787/ + server MCP :8787/mcp (chiave, rete loc.)│
  └────────▲────────────────────────────────────────────────────┘
           │  LAN / VPN
-     Claude Code sul tuo PC
+     Claude sul tuo PC
 ```
 
 ## Come funziona
@@ -69,56 +68,107 @@ Le regole vedono la PEC «aperta» in `email.pec`:
 Le ricevute si escludono con una regola ad alta priorità; la guida che Claude riceve dal
 server MCP lo spiega.
 
-## Installazione su Windows
+## Installazione con Docker
 
-Serve un PC sempre acceso che raggiunga il server di posta (anche l'SMTP, se l'invio è
-consentito solo dalla rete d'ufficio).
+Serve una macchina sempre accesa con Docker che raggiunga il server di posta (anche l'SMTP, se
+l'invio è consentito solo dalla rete d'ufficio).
 
-1. Copia `mail-router.exe` sul PC e aprilo con **doppio clic**. Windows chiede di confermare i
-   permessi di amministratore.
-2. Si apre la **procedura guidata**, che chiede:
-   - un nome per il servizio;
-   - la casella (server, utente, password, con prova di accesso);
-   - le cartelle da sorvegliare;
-   - l'invio (con prova);
-   - i domini a cui le regole possono inoltrare.
+1. Copia il progetto sulla macchina, accanto a `compose.yaml` crea `.env` partendo da
+   [.env.example](.env.example) e genera la **chiave master**:
 
-   Poi premi **Installa e avvia**.
+   ```bash
+   docker compose build
+   docker compose run --rm mail-router genkey
+   ```
+
+   Metti il valore in `MAIL_ROUTER_MASTER_KEY` e **conservane una copia fuori dalla macchina**
+   (gestore di password): cifra le password delle caselle salvate in `config.json`. Senza la
+   chiave le password vanno reinserite; regole e storico non si perdono.
+2. `docker compose up -d`. Senza configurazione il container apre la **procedura guidata**:
+   l'indirizzo con il codice di accesso è nel log (`docker compose logs mail-router`). La
+   procedura chiede casella, cartelle, invio e domini ammessi.
 3. Alla fine compare **una sola volta** la chiave di accesso, con il comando per collegare
-   Claude: copiali. Il pulsante successivo apre il pannello.
+   Claude: copiali. Il servizio parte subito nel container, in modalità «in prova».
 
-L'installazione:
-- copia il programma in `C:\Program Files\MailRouter`;
-- crea l'attività pianificata `MailRouter` (all'avvio di Windows, utente SYSTEM, riavvio automatico);
-- apre la porta del pannello e di MCP (8787) nel firewall solo per la rete locale;
-- limita `C:\ProgramData\MailRouter` ad amministratori e SYSTEM;
-- mette il collegamento **Mail Router** sul Desktop e nel menu Start.
+Dati, configurazione e log stanno nel volume `mail-router-data` (`/data`). Il container si
+riavvia da solo (`restart: unless-stopped`) e ha un healthcheck su `/health`. Il filtro per rete
+(`mcp.allowedNetworks`) vede l'indirizzo che arriva al container: pubblicando la porta su
+internet, metti davanti un reverse proxy https.
 
-Le password sono cifrate con DPAPI e si possono decifrare solo su quel PC.
+### Docker nella WSL di un PC Windows (installazione attuale, PC70Z)
+
+Docker Desktop non va bene per un servizio sempre acceso: parte solo con un utente collegato e,
+da una sessione remota, non scarica le immagini. Su PC70Z il container gira con **Docker Engine
+dentro la WSL Ubuntu** (`/opt/mail-router`):
+
+- `%USERPROFILE%\.wslconfig` con `networkingMode=mirrored` e `vmIdleTimeout=-1`: il container
+  risponde all'indirizzo del PC (`pc70z.zini.locale:8787`);
+- regole firewall «Mail Router (Docker WSL)» (Windows e Hyper-V) sulla porta 8787 dalle reti
+  private;
+- attività pianificata `MailRouter-WSL`: **al login di `zini\mazzisil`** avvia la WSL in modo
+  nascosto; systemd avvia Docker, Docker il container. Dopo un riavvio del PC lo smistamento
+  riparte quando quell'utente accede. Per l'avvio senza login serve il diritto «Accesso come
+  processo batch» per l'utente dell'attività (oggi la policy di dominio lo dà solo a
+  `ZINI\ASPNET_USER`).
+
+Comandi utili, da PowerShell sul PC:
+
+```powershell
+wsl -d Ubuntu -u root -- docker compose -f /opt/mail-router/compose.yaml ps
+wsl -d Ubuntu -u root -- docker compose -f /opt/mail-router/compose.yaml logs --tail 100 mail-router
+wsl -d Ubuntu -u root -- docker exec mail-router mail-router token
+```
+
+### Passare da una vecchia installazione Windows
+
+Sul PC con il vecchio servizio, da amministratore, con l'exe nuovo:
+
+1. ferma il vecchio servizio con il suo exe: `"C:\Program Files\MailRouter\mail-router.exe" uninstall`
+   (i dati restano) e fai una copia di `C:\ProgramData\MailRouter`;
+2. `mail-router.exe export-docker --out .\export --key <chiave master>`: decifra le password
+   DPAPI, le ricifra con la chiave del container e copia il database in modo consistente;
+3. sulla macchina Docker: `docker compose run --rm -v ./export:/import:ro mail-router import /import`
+   (verifica che la chiave apra ogni password) e `docker compose up -d`.
+
+Regole, dati, storico, coda e punto di lettura delle cartelle passano identici; la chiave di
+accesso esistente resta valida.
 
 ## Il pannello
 
-Dal collegamento sul Desktop (conferma di amministratore, nessuna chiave da digitare) oppure da
-qualsiasi computer della rete all'indirizzo `http://IP-DEL-PC:8787/`, inserendo la chiave di
-accesso. Le sezioni:
+Da qualsiasi computer della rete all'indirizzo `http://IP-DEL-SERVER:8787/` (a Zini:
+`http://pc70z.zini.locale:8787/`), inserendo la propria chiave di accesso. Le sezioni:
 
 - **Panoramica**: modalità, cartelle collegate, coda di invio, ultimi messaggi.
 - **Regole**: codice, priorità, accensione (attiva / in prova / spenta), prova sulle ultime
   mail vere, cronologia con ripristino.
 - **Attività**: per ogni messaggio le regole applicate e le azioni (fatto, in coda, errore,
   simulato, bloccato), con «Riprova» per quelle non riuscite.
-- **Posta**: elenco e ricerca, lettura senza segnare come letto, inoltra, sposta, elimina e
-  «Prova le regole» su un messaggio.
+- **Posta**: elenco e ricerca (con più caselle, si sceglie la casella), lettura senza segnare
+  come letto, inoltra, sposta, elimina e «Prova le regole» su un messaggio.
 - **Dati di riferimento**: gli elenchi che le regole leggono (uffici, persone…).
-- **Impostazioni**: comando per collegare Claude e nuova chiave, casella e cartelle, domini
-  ammessi, registro del servizio.
+- **Caselle di posta** (amministratori): aggiungi, modifica ed elimina le caselle sorvegliate,
+  ognuna con i suoi server IMAP/SMTP, cartelle e opzioni di inoltro. Ogni salvataggio verifica
+  l'accesso e riavvia il servizio per qualche secondo; una casella nuova parte dai messaggi che
+  arrivano da quel momento. Regole e dati di riferimento valgono per tutte (`email.account`).
+- **Utenti** (amministratori): ogni persona ha la sua chiave di accesso, valida per il pannello e
+  per Claude, mostrata una sola volta alla creazione. Si può rigenerare o revocare (eliminando
+  l'utente) senza toccare le chiavi degli altri. Ruoli: **amministratore** (tutto) e
+  **operatore** (regole, dati, posta e modalità; niente caselle, impostazioni, utenti né
+  `set_account_options`). Deve restare almeno un amministratore.
+- **Impostazioni**: comando per collegare Claude con la propria chiave e nuova chiave personale;
+  per gli amministratori nome dell'installazione e domini ammessi; registro del servizio. La
+  porta si sceglie in `compose.yaml` (`MAIL_ROUTER_PUBLISH`): nel container è sempre 8787.
+
+Aggiornando da una versione con chiave unica, quella chiave diventa l'utente «Amministratore»
+(le sessioni del pannello aperte vanno rifatte). `mail-router token` rigenera la chiave
+dell'amministratore principale.
 
 In alto si passa tra **In prova** (valuta e registra senza inviare), **Attivo** e **In pausa**.
 
-Da riga di comando restano `mail-router status`, `check`, `token`, `uninstall`,
-`setup --terminale` e `install`. Log in `C:\ProgramData\MailRouter\logs`; errori di avvio in
-`%TEMP%\mail-router-errori.log`. Per aggiornare: chiudi il pannello, sostituisci l'exe e
-lancia da amministratore `mail-router install`.
+Nel container (`docker exec mail-router mail-router <comando>`) ci sono `status`, `check`,
+`token`, `encrypt` (cifra una password letta da stdin) e `genkey`. Log su stdout
+(`docker compose logs`) e in `/data/logs`. Per aggiornare: `docker compose build` e
+`docker compose up -d`.
 
 ## Collegare Claude
 
@@ -129,16 +179,17 @@ dell'ufficio. Le strade sono due, e il pannello (Impostazioni → Collegare Clau
 pronto per entrambe.
 
 - **App Claude (chat)**: in Impostazioni → Sviluppatore → Modifica configurazione aggiungi in
-  `claude_desktop_config.json` il server `mail-router`. È lo stesso `mail-router.exe` avviato
-  come ponte locale (`bridge`): non serve installare Node.js. Poi chiudi del tutto l'app e
-  riaprila. Se l'app è su un altro PC Windows, copia lì l'exe e correggi il percorso.
+  `claude_desktop_config.json` il server `mail-router`. È `mail-router.exe` (versione Windows,
+  `bun run build:windows`) avviato come ponte locale (`bridge`): non serve installare Node.js.
+  Copialo in `C:\MailRouter` sul PC dove usi l'app (o correggi il percorso), poi chiudi del
+  tutto l'app e riaprila.
 
   ```json
   {
     "mcpServers": {
       "mail-router": {
-        "command": "C:\\Program Files\\MailRouter\\mail-router.exe",
-        "args": ["bridge", "--url", "http://IP-DEL-PC:8787/mcp"],
+        "command": "C:\\MailRouter\\mail-router.exe",
+        "args": ["bridge", "--url", "http://IP-DEL-SERVER:8787/mcp"],
         "env": { "MAIL_ROUTER_KEY": "mr_..." }
       }
     }
@@ -151,7 +202,7 @@ pronto per entrambe.
   terminale.
 
   ```bash
-  claude mcp add --transport http --scope user mail-router http://IP-DEL-PC:8787/mcp --header "Authorization: Bearer mr_..."
+  claude mcp add --transport http --scope user mail-router http://IP-DEL-SERVER:8787/mcp --header "Authorization: Bearer mr_..."
   ```
 
 Esempi di richieste:
@@ -191,13 +242,14 @@ function rule(email, data, h) {
 
 ## Configurazione
 
-`C:\ProgramData\MailRouter\config.json` (creato da `setup`; esempio in
+`/data/config.json` nel volume (creato dalla procedura guidata o da `import`; esempio in
 [config.example.json](config.example.json)). Campi principali:
 
 - `accounts[]`: `id`, `imap` e `smtp` (host, porta, utente, `password`), `watch` (cartelle
   sorvegliate), `ownAddresses` (indirizzi della casella: mai destinatari), `sentFolder`,
-  `trashFolder`, `markForwarded`. La password può essere `dpapi:…` (da `setup` o
-  `mail-router encrypt`), `env:NOME_VARIABILE` o in chiaro (solo per prove).
+  `trashFolder`, `markForwarded`. La password è `aes:…` (cifrata con la chiave master, dal
+  pannello o con `mail-router encrypt`), `env:NOME_VARIABILE` o `plain:…` (solo per prove,
+  con `MAIL_ROUTER_ALLOW_PLAIN=1`).
 - `outbound.allowedDomains`: domini raggiungibili dagli inoltri automatici (vuoto = tutti).
   Vale solo per le regole; le azioni manuali da Claude chiedono comunque conferma a te.
 - `mcp`: `host`, `port`, `allowedNetworks` (predefinite le reti private), `tls` (`cert`/`key`
@@ -207,15 +259,20 @@ function rule(email, data, h) {
 
 ## Sviluppo
 
-Richiede [Bun](https://bun.sh) ≥ 1.3.
+Richiede [Bun](https://bun.sh) ≥ 1.3 (oppure solo Docker: `docker compose build` esegue
+typecheck e test).
 
 ```bash
 bun install
 bun test                       # unit test
 bun run typecheck
-bun run build:windows          # dist/mail-router.exe (Windows x64, anche CPU senza AVX2)
+bun run build:windows          # dist/mail-router.exe: ponte per l'app Claude ed export-docker
 bun run build:local            # dist/mail-router per questa macchina
 ```
+
+Variabili d'ambiente del container: `MAIL_ROUTER_MASTER_KEY` (o `MAIL_ROUTER_MASTER_KEY_FILE`
+per un Docker secret), `MAIL_ROUTER_PUBLIC_URL` (indirizzo mostrato nelle istruzioni di
+collegamento), `MAIL_ROUTER_SETUP_CODE` (codice fisso per la procedura guidata, facoltativo).
 
 Prova completa contro un server di posta vero (GreenMail in Docker), con servizio, server MCP e
 client MCP nello stesso processo — vedi l'intestazione di [test/e2e.test.ts](test/e2e.test.ts):

@@ -440,18 +440,20 @@ function FolderSelect({ folders, value, onChange }: { folders: Folder[]; value: 
   );
 }
 
-export function SecurityFields({ state, set, showPort }: { state: FormState; set: Setter; showPort?: boolean }) {
+export function SecurityFields({ state, set, showPort, hideDomains }: { state: FormState; set: Setter; showPort?: boolean; hideDomains?: boolean }) {
   return (
     <div className="stack">
       <Field label="Indirizzi di questa casella" hint="Separati da virgola: le regole non inoltreranno mai a questi indirizzi">
         <input className="input" value={state.ownAddresses} onChange={(event) => set((current) => ({ ...current, ownAddresses: event.target.value }))} />
       </Field>
-      <Field
-        label="Domini a cui le regole possono inoltrare"
-        hint="Separati da virgola, es. azienda.it. Vuoto = qualsiasi dominio (sconsigliato)"
-      >
-        <input className="input" value={state.allowedDomains} onChange={(event) => set((current) => ({ ...current, allowedDomains: event.target.value }))} />
-      </Field>
+      {hideDomains ? null : (
+        <Field
+          label="Domini a cui le regole possono inoltrare"
+          hint="Separati da virgola, es. azienda.it. Vuoto = qualsiasi dominio (sconsigliato)"
+        >
+          <input className="input" value={state.allowedDomains} onChange={(event) => set((current) => ({ ...current, allowedDomains: event.target.value }))} />
+        </Field>
+      )}
       <Check checked={state.markForwarded} onChange={(markForwarded) => set((current) => ({ ...current, markForwarded }))}>
         Segna come «inoltrato» il messaggio originale dopo un inoltro automatico
       </Check>

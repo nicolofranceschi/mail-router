@@ -63,6 +63,7 @@ function runtime(port: number): AccountRuntime {
       ownAddresses: [],
       markForwarded: true,
       forwardAsAttachment: false,
+      markSortedRead: false,
     },
     imapPassword: "x",
     smtpPassword: "secret",

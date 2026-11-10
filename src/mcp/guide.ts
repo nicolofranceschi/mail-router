@@ -1,7 +1,7 @@
 /** Sent as the MCP server instructions and returned by get_rule_guide. Model-facing. */
 export const RULE_GUIDE = `# Mail Router
 
-This server runs on a Windows PC next to the mailbox. It watches IMAP folders: every NEW message
+This server runs in a Docker container on the office network. It watches IMAP folders: every NEW message
 is passed through the rules (JavaScript you write) and the resulting actions — forward, flag,
 mark read, move to a folder — are executed by the service. Through these tools you manage the rules,
 the reference data the rules read, and the mailbox itself. Reply to the user in their language.

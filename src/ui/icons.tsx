@@ -47,6 +47,19 @@ export const NAV_ICONS: Record<string, ReactNode> = {
       <path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5" />
     </Svg>
   ),
+  caselle: (
+    <Svg>
+      <path d="M3 13.5 5.5 5.5A2 2 0 0 1 7.4 4h9.2a2 2 0 0 1 1.9 1.5L21 13.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <path d="M3 13.5h5l1.5 2.5h5l1.5-2.5h5" />
+    </Svg>
+  ),
+  utenti: (
+    <Svg>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20c.6-3.4 3.2-5.5 6.5-5.5s5.9 2.1 6.5 5.5" />
+      <path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.6.8 2.7 2.6 3 5.2" />
+    </Svg>
+  ),
   impostazioni: (
     <Svg>
       <path d="M3.5 7H13M18 7h2.5M3.5 17H6M11 17h9.5" />

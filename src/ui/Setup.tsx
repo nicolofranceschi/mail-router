@@ -88,6 +88,17 @@ export function Setup({ defaults }: { defaults: { instanceName: string } }) {
   const openPanel = async () => {
     if (!result) return;
     await api("/api/setup/close", {}).catch(() => undefined);
+    // The wizard hands the port over to the service: wait until the panel answers on it.
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      try {
+        const health = (await (await fetch("/health", { cache: "no-store" })).json()) as { mode?: string };
+        if (health.mode && health.mode !== "setup") break;
+      } catch {
+        // not up yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
     window.location.href = result.openUrl;
   };
 
@@ -155,10 +166,10 @@ export function Setup({ defaults }: { defaults: { instanceName: string } }) {
           {step === 4 ? (
             <>
               <h2>Sicurezza</h2>
-              <SecurityFields state={state} set={setState} showPort />
+              <SecurityFields state={state} set={setState} />
               <p className="muted small">
-                Premendo «Installa e avvia», Mail Router si installa come servizio di Windows (parte da solo all'accensione
-                del PC) e apre la porta {state.mcpPort} solo per la rete locale.
+                Premendo «Installa e avvia», la configurazione viene salvata e il servizio parte subito nel container, in modalità
+                «in prova».
               </p>
             </>
           ) : null}

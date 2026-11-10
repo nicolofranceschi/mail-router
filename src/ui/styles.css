@@ -217,9 +217,14 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
   font-size: 12.5px;
+}
+.sidebar-user {
+  flex-basis: 100%;
+  color: var(--text);
 }
 .logout {
   display: inline-flex;

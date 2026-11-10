@@ -1,56 +1,46 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import {
-  FolderFields,
-  formFromSettings,
-  ForwardFields,
-  ImapFields,
-  imapPayload,
-  SecurityFields,
-  settingsPayload,
-  SmtpFields,
-  withSmtpDefaults,
-  type Folder,
-  type FormState,
-} from "../AccountForm";
+import { splitList } from "../format";
 import { api, tool } from "../api";
 import { ClaudeAccess, type Access as AccessInfo } from "../ClaudeAccess";
-import { Button, Confirm, CopyButton, ErrorBox, Spinner, useAction, useLoad } from "../components";
+import { Button, Confirm, ErrorBox, Field, Spinner, useLoad } from "../components";
+import { FreshKey } from "./Users";
 
-export function Settings() {
-  const settings = useLoad(() => api("/api/settings"), []);
-  if (settings.error) return <ErrorBox error={settings.error} onRetry={settings.reload} />;
-  if (!settings.data) return <Spinner />;
+export function Settings({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div className="page">
       <h1>Impostazioni</h1>
-      <Access access={settings.data.access} />
-      <Account settings={settings.data.settings} />
+      <MyAccess />
+      {isAdmin ? <General /> : null}
       <Logs />
     </div>
   );
 }
 
-function Access({ access }: { access: AccessInfo }) {
+/** The signed-in user's own key: how to connect Claude with it, and a new one when it leaked. */
+function MyAccess() {
+  const access = useLoad(() => api<{ user: { name: string; role: string; keyHint: string | null }; access: AccessInfo }>("/api/access"), []);
   const [confirm, setConfirm] = useState(false);
-  const [fresh, setFresh] = useState<(AccessInfo & { key: string }) | null>(null);
+  const [fresh, setFresh] = useState<(AccessInfo & { key: string; who: string }) | null>(null);
+  if (access.error) return <ErrorBox error={access.error} onRetry={access.reload} />;
+  if (!access.data) return <Spinner />;
+  const { user } = access.data;
   return (
     <div className="card stack">
       <h2>Collegare Claude</h2>
-      <ClaudeAccess access={fresh ?? access} keyKnown={Boolean(fresh)} />
+      <p className="muted small">
+        Con la tua chiave personale ({user.keyHint ?? "creata prima degli utenti"}): Claude potrà fare quello che il tuo ruolo
+        permette.
+      </p>
       {fresh ? (
-        <div className="stack tight">
-          <b>Nuova chiave di accesso</b>
-          <div className="keybox">{fresh.key}</div>
-          <div className="row">
-            <CopyButton text={fresh.key} label="Copia la chiave" />
-            <span className="muted small">Viene mostrata solo ora; il testo qui sopra la contiene già.</span>
-          </div>
-        </div>
+        <FreshKey fresh={fresh} />
       ) : (
-        <div>
-          <Button onClick={() => setConfirm(true)}>Genera una nuova chiave</Button>
-        </div>
+        <>
+          <ClaudeAccess access={access.data.access} keyKnown={false} />
+          <div>
+            <Button onClick={() => setConfirm(true)}>Genera una nuova chiave per me</Button>
+          </div>
+        </>
       )}
       {confirm ? (
         <Confirm
@@ -58,75 +48,69 @@ function Access({ access }: { access: AccessInfo }) {
           confirmLabel="Genera"
           danger
           onClose={() => setConfirm(false)}
-          onConfirm={async () => setFresh(await api("/api/access/rotate", {}))}
+          onConfirm={async () => setFresh({ ...(await api<AccessInfo & { key: string }>("/api/access/rotate", {})), who: user.name })}
         >
-          La chiave attuale smette subito di funzionare: dovrai ricollegare Claude con quella nuova. Le sessioni del pannello
-          già aperte restano valide.
+          La tua chiave attuale smette subito di funzionare: dovrai ricollegare Claude con quella nuova. Le sessioni del pannello
+          già aperte restano valide. Le chiavi degli altri utenti non cambiano.
         </Confirm>
       ) : null}
     </div>
   );
 }
 
-function Account({ settings }: { settings: any }) {
-  const [state, setState] = useState<FormState>(() => formFromSettings(settings));
-  const [folders, setFolders] = useState<Folder[]>(() =>
-    [...new Set([...settings.watch, settings.sentFolder, settings.trashFolder].filter(Boolean))].map((path) => ({ path, specialUse: null })),
-  );
+/** Settings that apply to the whole service, not to one mailbox. */
+function General() {
+  const settings = useLoad(() => api("/api/settings"), []);
+  if (settings.error) return <ErrorBox error={settings.error} onRetry={settings.reload} />;
+  if (!settings.data) return <Spinner />;
+  return <GeneralForm general={settings.data.general} />;
+}
+
+function GeneralForm({ general }: { general: { instanceName: string; allowedDomains: string[]; mcpPort: number } }) {
+  const [instanceName, setInstanceName] = useState(general.instanceName);
+  const [domains, setDomains] = useState(general.allowedDomains.join(", "));
+  // The port inside the container is fixed: the published one is chosen in compose.yaml.
+  const port = String(general.mcpPort);
   const [confirmSave, setConfirmSave] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  const { busy, run } = useAction();
-
-  useEffect(() => {
-    void tool("list_folders").then((list: Folder[]) => setFolders(list), () => undefined);
-  }, []);
-
-  const test = () =>
-    run(async () => {
-      const response = await api<{ folders: Folder[] }>("/api/settings/test-imap", { imap: imapPayload(state) });
-      setFolders(response.folders);
-      if (state.smtpEnabled) {
-        const filled = withSmtpDefaults(state);
-        await api("/api/settings/test-smtp", { imap: imapPayload(filled), smtp: settingsPayload(filled).smtp });
-      }
-    }, "Collegamento riuscito");
 
   const save = async () => {
-    const result = await api<{ restarting: boolean }>("/api/settings", { settings: settingsPayload(withSmtpDefaults(state)) });
+    const result = await api<{ restarting: boolean }>("/api/settings/general", {
+      general: {
+        instanceName: instanceName.trim(),
+        allowedDomains: splitList(domains).map((domain) => domain.replace(/^@/, "")),
+        mcpPort: Number(port),
+      },
+    });
     if (result.restarting) {
       setRestarting(true);
-      setTimeout(() => window.location.reload(), 6000);
+      const portChanged = Number(port) !== general.mcpPort;
+      setTimeout(() => {
+        if (portChanged) window.location.port = port;
+        else window.location.reload();
+      }, 6000);
     }
   };
 
   return (
     <div className="card stack">
-      <h2>Casella di posta</h2>
-      {settings.otherAccounts?.length ? (
-        <div className="notice small">Altre caselle configurate nel file: {settings.otherAccounts.join(", ")} (non modificabili da qui).</div>
-      ) : null}
-      <h3>Lettura (IMAP)</h3>
-      <ImapFields state={state} set={setState} passwordOptional />
-      <h3>Cartelle</h3>
-      <FolderFields state={state} set={setState} folders={folders} />
-      <h3>Inoltro</h3>
-      <SmtpFields state={state} set={setState} passwordOptional />
-      {state.smtpEnabled ? <ForwardFields state={state} set={setState} folders={folders} /> : null}
-      <h3>Sicurezza</h3>
-      <SecurityFields state={state} set={setState} />
+      <h2>Generali</h2>
+      <p className="muted small">Valgono per tutte le caselle. Le caselle di posta si gestiscono nella pagina «Caselle di posta».</p>
+      <Field label="Nome di questa installazione">
+        <input className="input" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} />
+      </Field>
+      <Field label="Domini a cui le regole possono inoltrare" hint="Separati da virgola, es. azienda.it. Vuoto = qualsiasi dominio (sconsigliato)">
+        <input className="input" value={domains} onChange={(event) => setDomains(event.target.value)} />
+      </Field>
       {restarting ? <Spinner label="Impostazioni salvate: Mail Router si riavvia…" /> : null}
       <div className="row">
-        <Button busy={busy} onClick={test}>
-          Prova il collegamento
-        </Button>
-        <Button variant="primary" disabled={restarting || !state.watch.length} onClick={() => setConfirmSave(true)}>
+        <Button variant="primary" disabled={restarting || !instanceName.trim() || !/^\d+$/.test(port)} onClick={() => setConfirmSave(true)}>
           Salva
         </Button>
       </div>
       {confirmSave ? (
         <Confirm title="Salvare le impostazioni?" confirmLabel="Salva e riavvia" onClose={() => setConfirmSave(false)} onConfirm={save}>
-          Prima del salvataggio viene verificato l'accesso alla casella. Poi Mail Router si riavvia per qualche secondo; le regole e
-          lo storico restano.
+          Mail Router si riavvia per qualche secondo; le regole e lo storico restano.
         </Confirm>
       ) : null}
     </div>

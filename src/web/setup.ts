@@ -1,67 +1,70 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-import { createOnceToken, randomToken, readCookie, rotateToken } from "../auth";
-import { DB_FILE, VERSION } from "../config";
+import { accessInfo } from "../access";
+import { createOnceToken, FailureLimiter, ipAllowed, parseNetworks, randomToken, readCookie, rotateToken } from "../auth";
+import { APP_NAME, DB_FILE, PRIVATE_NETWORKS, VERSION } from "../config";
 import { errorMessage, log } from "../log";
-import { installService, restrictDataFolder } from "../service/windows";
 import { buildConfig, parseImapForm, parseSmtpForm, settingsForm, testImap, testSmtp, writeConfig } from "../settings";
-import { accessInfo } from "../setup";
 import { Store } from "../store";
 import indexHtml from "../ui/index.html";
 import { errorJson, errorResponse, json, readJson } from "./http";
 
-const IDLE_LIMIT_MS = 60 * 60_000;
 const SETUP_COOKIE = "mr_setup";
 
-async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(3000) });
-      if (response.ok) return true;
-    } catch {
-      // not up yet
-    }
-    await Bun.sleep(1000);
-  }
-  return false;
+export interface SetupServerOptions {
+  hostname?: string;
+  port?: number;
+  /** Who may open the wizard (default: private networks). */
+  allowedNetworks?: string[];
+  /** The code that opens the wizard; random when omitted. */
+  code?: string;
 }
 
 /**
- * First-run wizard, served only on 127.0.0.1 by an elevated process. The page
- * gets in with the one-time token in its URL; finishing writes the config,
- * creates the access key, installs and starts the service, and hands the
- * browser a one-time link into the real panel.
+ * First-run wizard, served by the container while there is no config.json.
+ * The page gets in with the setup code printed in the container log (as
+ * `?once=` in the address); finishing writes the config, creates the access
+ * key and stops this server, so the real service can take the port.
  */
-export function startSetupServer(home: string): { url: string; done: Promise<void> } {
-  let once: string | null = randomToken();
-  let session: string | null = null;
+export function startSetupServer(home: string, options: SetupServerOptions = {}): { url: string; code: string; done: Promise<void> } {
+  const code = options.code ?? randomToken();
+  const networks = parseNetworks(options.allowedNetworks ?? PRIVATE_NETWORKS);
+  const limiter = new FailureLimiter();
+  const sessions = new Set<string>();
   let finished = false;
+  let stopped = false;
   let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => (resolveDone = resolve));
-  let idle = setTimeout(() => stop("nessuna attività"), IDLE_LIMIT_MS);
 
   const stop = (reason: string) => {
+    if (stopped) return;
+    stopped = true;
     log.info(`procedura guidata chiusa (${reason})`);
-    clearTimeout(idle);
     void server.stop(true);
     resolveDone();
   };
 
-  // Its own cookie name: cookies ignore ports, and the panel on 127.0.0.1 uses mr_session.
-  const authenticated = (request: Request) => Boolean(session) && readCookie(request, SETUP_COOKIE) === session;
+  // Its own cookie name: cookies ignore ports, and the panel uses mr_session.
+  const authenticated = (request: Request) => {
+    const cookie = readCookie(request, SETUP_COOKIE);
+    return Boolean(cookie && sessions.has(cookie));
+  };
 
   const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
+    hostname: options.hostname ?? "0.0.0.0",
+    port: options.port ?? 0,
     development: false,
     idleTimeout: 255,
     routes: { "/": indexHtml },
-    async fetch(request) {
-      clearTimeout(idle);
-      idle = setTimeout(() => stop("nessuna attività"), IDLE_LIMIT_MS);
+    async fetch(request, srv) {
       const { pathname } = new URL(request.url);
+      if (pathname === "/health") return json({ ok: true, name: APP_NAME, version: VERSION, mode: "setup" });
+      const ip = srv.requestIP(request)?.address ?? "";
+      if (!ipAllowed(networks, ip)) {
+        log.warn(`procedura guidata: richiesta rifiutata da ${ip || "indirizzo sconosciuto"}`);
+        return new Response("Forbidden", { status: 403 });
+      }
       try {
         if (pathname === "/api/bootstrap") {
           return json({
@@ -73,10 +76,16 @@ export function startSetupServer(home: string): { url: string; done: Promise<voi
           });
         }
         if (pathname === "/api/session/once" && request.method === "POST") {
+          if (limiter.blocked(ip)) return errorJson(429, "Troppi tentativi: riprova tra un minuto");
           const body = await readJson(request);
-          if (!once || body.once !== once) return errorJson(401, "Collegamento scaduto: riapri Mail Router");
-          once = null;
-          session = randomToken();
+          // The code stays valid until the setup is finished: closing the tab must not lock anyone out.
+          if (finished || typeof body.once !== "string" || body.once.trim() !== code) {
+            limiter.fail(ip);
+            return errorJson(401, finished ? "Configurazione già completata: apri il pannello" : "Codice di configurazione non valido");
+          }
+          limiter.reset(ip);
+          const session = randomToken();
+          sessions.add(session);
           return json({ ok: true }, { headers: { "Set-Cookie": `${SETUP_COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/` } });
         }
         if (!authenticated(request)) return errorJson(401, "Accesso richiesto");
@@ -91,44 +100,33 @@ export function startSetupServer(home: string): { url: string; done: Promise<voi
           return json({ ok: true });
         }
         if (pathname === "/api/setup/finish" && request.method === "POST") {
-          if (finished) return errorJson(409, "Installazione già completata");
+          if (finished) return errorJson(409, "Configurazione già completata");
           const body = await readJson(request);
           const form = settingsForm.parse(body.settings);
           await testImap(form.imap);
           if (form.smtp) await testSmtp(form.imap, form.smtp);
 
           mkdirSync(home, { recursive: true });
-          if (process.platform === "win32") restrictDataFolder(home);
           const config = buildConfig(form);
           writeConfig(home, config);
           const store = new Store(path.join(home, DB_FILE));
           const key = rotateToken(store);
+          const panelOnce = createOnceToken(store);
           store.close();
-
-          const steps: string[] = [`configurazione salvata in ${home}`];
-          let running = false;
-          if (process.platform === "win32") {
-            steps.push(...(await installService({ home, firewallRemote: ["LocalSubnet"] })));
-            running = await waitForHealth(config.mcp.port, 60_000);
-          } else {
-            steps.push(`avvia il servizio con: mail-router run --home "${home}"`);
-          }
-          const panelStore = new Store(path.join(home, DB_FILE));
-          const panelOnce = createOnceToken(panelStore);
-          panelStore.close();
           finished = true;
-          // The wizard page keeps showing the key; the server can go a little later.
-          setTimeout(() => stop("installazione completata"), 10 * 60_000);
+          sessions.clear();
+          log.info("configurazione completata dalla procedura guidata: avvio del servizio");
+          // Give the response time to leave, then free the port for the service.
+          setTimeout(() => stop("configurazione completata"), 1500);
           return json({
             key,
-            steps,
-            running,
-            openUrl: `http://127.0.0.1:${config.mcp.port}/?once=${panelOnce}`,
-            access: accessInfo(config.mcp, key),
+            steps: [`configurazione salvata in ${home}`, "il servizio si avvia in modalità «in prova»"],
+            running: true,
+            openUrl: `/?once=${panelOnce}`,
+            access: accessInfo(config.mcp, key, new URL(request.url).origin),
           });
         }
         if (pathname === "/api/setup/close" && request.method === "POST") {
-          setTimeout(() => stop("chiusa dall'utente"), 2000);
           return json({ ok: true });
         }
         return errorJson(404, "Risorsa non trovata");
@@ -141,7 +139,6 @@ export function startSetupServer(home: string): { url: string; done: Promise<voi
     },
   });
 
-  const url = `http://127.0.0.1:${server.port}/?once=${once}`;
-  log.info(`procedura guidata pronta su http://127.0.0.1:${server.port}/`);
-  return { url, done };
+  const url = `http://127.0.0.1:${server.port}/?once=${code}`;
+  return { url, code, done };
 }

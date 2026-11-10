@@ -13,6 +13,7 @@ import { startServer } from "../src/web/server";
 import { startSetupServer } from "../src/web/setup";
 
 const E2E = process.env.MAIL_ROUTER_E2E === "1";
+process.env.MAIL_ROUTER_MASTER_KEY ??= "chiave-master-di-prova-lunga-almeno-32-caratteri";
 const suite = E2E ? describe : describe.skip;
 const PORT = 18790;
 
@@ -65,7 +66,7 @@ suite("wizard and panel", () => {
   let openUrl = "";
 
   test("the wizard needs its one-time link, tests the mailbox and writes the config", async () => {
-    const setup = startSetupServer(home);
+    const setup = startSetupServer(home, { hostname: "127.0.0.1" });
     const base = new URL(setup.url).origin;
     const once = new URL(setup.url).searchParams.get("once")!;
 
@@ -79,7 +80,8 @@ suite("wizard and panel", () => {
     const login = await post(base, "/api/session/once", { once });
     expect(login.status).toBe(200);
     const cookie = cookieOf(login);
-    expect((await post(base, "/api/session/once", { once })).status).toBe(401);
+    // The setup code stays valid until the end: a closed tab must not lock anyone out.
+    expect((await post(base, "/api/session/once", { once })).status).toBe(200);
 
     const imap = await (await post(base, "/api/setup/imap", { imap: settings.imap }, cookie)).json();
     expect(imap.folders.map((folder: { path: string }) => folder.path)).toContain("INBOX");
@@ -92,6 +94,8 @@ suite("wizard and panel", () => {
     expect(finish.access.command).toContain(finish.key);
     expect(existsSync(path.join(home, "config.json"))).toBe(true);
     expect(readFileSync(path.join(home, "config.json"), "utf8")).not.toContain('"secret"');
+    expect(readFileSync(path.join(home, "config.json"), "utf8")).toContain('"aes:');
+    expect((await post(base, "/api/session/once", { once })).status).toBe(401);
     key = finish.key;
     openUrl = finish.openUrl;
     await post(base, "/api/setup/close", {}, cookie);
@@ -109,7 +113,9 @@ suite("wizard and panel", () => {
     expect(noJson.status).toBe(415);
     expect((await post(base, "/api/session/key", { key: "mr_sbagliata" })).status).toBe(401);
 
-    const once = new URL(openUrl).searchParams.get("once");
+    // Relative: inside the container only the browser knows the real address.
+    expect(openUrl).toStartWith("/?once=");
+    const once = new URL(openUrl, base).searchParams.get("once");
     const viaLink = await post(base, "/api/session/once", { once });
     expect(viaLink.status).toBe(200);
     const linkCookie = cookieOf(viaLink);

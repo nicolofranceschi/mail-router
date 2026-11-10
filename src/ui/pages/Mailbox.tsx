@@ -5,7 +5,11 @@ import { ActionChips, Badge, Button, Confirm, Empty, ErrorBox, Field, Modal, Spi
 import { bytes, flagLabels, formatDate } from "../format";
 
 export function Mailbox({ status }: { status: any }) {
-  const defaultFolder: string = status?.accounts?.[0]?.watch?.[0] ?? "INBOX";
+  const accounts: any[] = status?.accounts ?? [];
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const activeAccount = accounts.find((entry) => entry.id === accountId) ?? accounts[0];
+  const account: string | undefined = activeAccount?.id;
+  const defaultFolder: string = activeAccount?.watch?.[0] ?? "INBOX";
   const [folder, setFolder] = useState<string | null>(null);
   const activeFolder = folder ?? defaultFolder;
   const [query, setQuery] = useState({ subject: "", from: "", unseen: false });
@@ -13,17 +17,18 @@ export function Mailbox({ status }: { status: any }) {
   const [selected, setSelected] = useState<number | null>(null);
   const [pages, setPages] = useState(1);
 
-  const folders = useLoad(() => tool("list_folders"), []);
+  const folders = useLoad(() => tool("list_folders", { account }), [account]);
   const messages = useLoad(
     () =>
       tool("search_emails", {
+        account,
         folder: activeFolder,
         limit: 30 * pages,
         ...(applied.subject ? { subject: applied.subject } : {}),
         ...(applied.from ? { from: applied.from } : {}),
         ...(applied.unseen ? { unseen: true } : {}),
       }),
-    [activeFolder, applied, pages],
+    [account, activeFolder, applied, pages],
   );
 
   return (
@@ -42,9 +47,30 @@ export function Mailbox({ status }: { status: any }) {
           setApplied(query);
         }}
       >
+        {accounts.length > 1 ? (
+          <select
+            className="input"
+            style={{ width: "auto", maxWidth: 260 }}
+            aria-label="Casella"
+            value={account}
+            onChange={(event) => {
+              setAccountId(event.target.value);
+              setFolder(null);
+              setSelected(null);
+              setPages(1);
+            }}
+          >
+            {accounts.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.id} ({entry.user})
+              </option>
+            ))}
+          </select>
+        ) : null}
         <select
           className="input"
           style={{ width: "auto", maxWidth: 320 }}
+          aria-label="Cartella"
           value={activeFolder}
           onChange={(event) => {
             setFolder(event.target.value);
@@ -123,12 +149,13 @@ export function Mailbox({ status }: { status: any }) {
         </div>
         {selected ? (
           <MessageDetail
-            key={`${activeFolder}:${selected}`}
+            key={`${account}:${activeFolder}:${selected}`}
+            account={account}
             folder={activeFolder}
             uid={selected}
             folders={(folders.data ?? []).map((entry: any) => entry.path)}
-            canDelete={Boolean(status?.accounts?.[0]?.trashFolder)}
-            canSend={Boolean(status?.accounts?.[0]?.canSend)}
+            canDelete={Boolean(activeAccount?.trashFolder)}
+            canSend={Boolean(activeAccount?.canSend)}
             onGone={() => {
               setSelected(null);
               messages.reload();
@@ -144,6 +171,7 @@ export function Mailbox({ status }: { status: any }) {
 }
 
 function MessageDetail(props: {
+  account: string | undefined;
   folder: string;
   uid: number;
   folders: string[];
@@ -152,8 +180,8 @@ function MessageDetail(props: {
   onGone: () => void;
   onChanged: () => void;
 }) {
-  const { folder, uid } = props;
-  const message = useLoad(() => tool("get_email", { folder, uid }), [folder, uid]);
+  const { account, folder, uid } = props;
+  const message = useLoad(() => tool("get_email", { account, folder, uid }), [account, folder, uid]);
   const [dialog, setDialog] = useState<"forward" | "move" | "delete" | "rules" | null>(null);
   const { busy, run } = useAction();
 
@@ -194,7 +222,7 @@ function MessageDetail(props: {
           busy={busy}
           onClick={() =>
             run(async () => {
-              await tool("set_flags", { folder, uid, ...(seen ? { remove: ["\\Seen"] } : { add: ["\\Seen"] }) });
+              await tool("set_flags", { account, folder, uid, ...(seen ? { remove: ["\\Seen"] } : { add: ["\\Seen"] }) });
               message.reload();
               props.onChanged();
             })
@@ -242,11 +270,11 @@ function MessageDetail(props: {
         </div>
       ) : null}
 
-      {dialog === "forward" ? <ForwardDialog folder={folder} uid={uid} onClose={() => setDialog(null)} onDone={() => { message.reload(); props.onChanged(); }} /> : null}
-      {dialog === "rules" ? <RulesCheck folder={folder} uid={uid} onClose={() => setDialog(null)} /> : null}
+      {dialog === "forward" ? <ForwardDialog account={account} folder={folder} uid={uid} onClose={() => setDialog(null)} onDone={() => { message.reload(); props.onChanged(); }} /> : null}
+      {dialog === "rules" ? <RulesCheck account={account} folder={folder} uid={uid} onClose={() => setDialog(null)} /> : null}
       {dialog === "move" ? (
         <MoveDialog folders={props.folders.filter((path) => path !== folder)} onClose={() => setDialog(null)} onMove={async (target) => {
-          await tool("move_email", { folder, uid, target });
+          await tool("move_email", { account, folder, uid, target });
           props.onGone();
         }} />
       ) : null}
@@ -257,7 +285,7 @@ function MessageDetail(props: {
           danger
           onClose={() => setDialog(null)}
           onConfirm={async () => {
-            await tool("delete_email", { folder, uid });
+            await tool("delete_email", { account, folder, uid });
             props.onGone();
           }}
         >
@@ -268,7 +296,7 @@ function MessageDetail(props: {
   );
 }
 
-function ForwardDialog({ folder, uid, onClose, onDone }: { folder: string; uid: number; onClose: () => void; onDone: () => void }) {
+function ForwardDialog({ account, folder, uid, onClose, onDone }: { account: string | undefined; folder: string; uid: number; onClose: () => void; onDone: () => void }) {
   const [to, setTo] = useState("");
   const [note, setNote] = useState("");
   const [replyToSender, setReplyToSender] = useState(false);
@@ -291,7 +319,7 @@ function ForwardDialog({ folder, uid, onClose, onDone }: { folder: string; uid: 
           busy={busy}
           disabled={!to.trim()}
           onClick={async () => {
-            const done = await run(() => tool("forward_email", { folder, uid, to, ...(note ? { note } : {}), replyToSender }), "Messaggio inoltrato");
+            const done = await run(() => tool("forward_email", { account, folder, uid, to, ...(note ? { note } : {}), replyToSender }), "Messaggio inoltrato");
             if (done) {
               onDone();
               onClose();
@@ -327,8 +355,8 @@ function MoveDialog({ folders, onClose, onMove }: { folders: string[]; onClose: 
   );
 }
 
-function RulesCheck({ folder, uid, onClose }: { folder: string; uid: number; onClose: () => void }) {
-  const result = useLoad(() => tool("reprocess_email", { folder, uid }), [folder, uid]);
+function RulesCheck({ account, folder, uid, onClose }: { account: string | undefined; folder: string; uid: number; onClose: () => void }) {
+  const result = useLoad(() => tool("reprocess_email", { account, folder, uid }), [account, folder, uid]);
   return (
     <Modal title="Cosa farebbero le regole" onClose={onClose}>
       <p className="muted small">Simulazione con le regole attuali: non viene inviato né modificato nulla.</p>

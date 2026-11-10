@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { api, onUnauthorized } from "./api";
 import { Button, ErrorBox, Field, Spinner, ToastProvider } from "./components";
 import { BrandMark } from "./icons";
-import { Panel } from "./Panel";
+import { Panel, type CurrentUser } from "./Panel";
 import { Setup } from "./Setup";
 
 interface Bootstrap {
@@ -13,6 +13,7 @@ interface Bootstrap {
   version: string;
   instanceName?: string;
   defaults?: { instanceName: string };
+  user?: CurrentUser | null;
 }
 
 /** A `?once=` link opens a session and is then removed from the address bar. */
@@ -67,7 +68,14 @@ function App() {
     );
   }
   if (boot.mode === "setup") return <Setup defaults={boot.defaults ?? { instanceName: "Smistamento posta" }} />;
-  return <Panel instanceName={boot.instanceName ?? "Mail Router"} version={boot.version} onLogout={load} />;
+  return (
+    <Panel
+      instanceName={boot.instanceName ?? "Mail Router"}
+      version={boot.version}
+      user={boot.user ?? { id: "", name: "", role: "operator" }}
+      onLogout={load}
+    />
+  );
 }
 
 function Login({ instanceName, onDone }: { instanceName: string; onDone: () => void }) {
@@ -103,7 +111,7 @@ function Login({ instanceName, onDone }: { instanceName: string; onDone: () => v
             <p className="muted small">Pannello di Mail Router</p>
           </div>
         </div>
-        <Field label="Chiave di accesso" hint="Sul PC dove è installato, apri «Mail Router» dal Desktop: entri senza chiave.">
+        <Field label="La tua chiave di accesso" hint="Ogni utente ha la sua chiave, creata da un amministratore nella pagina «Utenti». Sul PC dove è installato, «Mail Router» dal Desktop entra come amministratore senza chiave.">
           <input className="input mono" type="password" value={key} onChange={(event) => setKey(event.target.value)} autoFocus />
         </Field>
         {error ? <div className="notice err">{error}</div> : null}

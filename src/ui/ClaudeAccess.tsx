@@ -44,7 +44,8 @@ export function ClaudeAccess({ access, keyKnown }: { access: Access; keyKnown: b
           <div className="row wrap">
             <CopyButton text={access.desktopConfig} label="Copia la configurazione" />
             <span className="muted small">
-              Se l'app Claude è su un altro computer Windows, copia lì anche mail-router.exe e correggi il percorso in «command».
+              Sul computer dove usi l'app Claude copia mail-router.exe (versione Windows, fa solo da ponte) in C:\MailRouter, oppure
+              correggi il percorso in «command».
             </span>
           </div>
         </div>

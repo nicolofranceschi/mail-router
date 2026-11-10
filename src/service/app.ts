@@ -22,6 +22,8 @@ export class App {
   readonly instanceId: string;
   private readonly accounts = new Map<string, AccountRuntime>();
   private purgeTimer: ReturnType<typeof setInterval> | null = null;
+  /** Set by the worker: reopens the service with the config on disk (after the panel saved new settings). */
+  onRestartRequest?: () => void;
 
   private constructor(
     readonly home: string,
@@ -58,6 +60,8 @@ export class App {
 
   /** Starts watchers, executor and housekeeping. */
   startBackground(): void {
+    const forgotten = this.store.forgetWatchStatesExcept(this.config.accounts.map((account) => account.id));
+    if (forgotten) log.info(`dimenticata la posizione di ${forgotten} cartelle di caselle non più configurate`);
     for (const account of this.accounts.values()) {
       for (const folder of account.config.watch) {
         const watcher = new FolderWatcher(this, account, folder);

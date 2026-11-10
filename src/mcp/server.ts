@@ -3,6 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z, type ZodRawShape } from "zod";
 
+import type { Role } from "../auth";
 import { VERSION } from "../config";
 import { errorMessage, log } from "../log";
 import type { App } from "../service/app";
@@ -12,6 +13,13 @@ import { registerEngineTools } from "./tools/engine";
 import { registerMailboxTools } from "./tools/mailbox";
 import { registerRuleTools } from "./tools/rules";
 
+/** Tools that change the service's configuration: administrators only. */
+export const ADMIN_TOOLS = new Set(["set_account_options"]);
+
+export function toolAllowed(name: string, role: Role): boolean {
+  return role === "admin" || !ADMIN_TOOLS.has(name);
+}
+
 function registerAll(server: McpServer, app: App): void {
   registerEngineTools(server, app);
   registerRuleTools(server, app);
@@ -19,21 +27,27 @@ function registerAll(server: McpServer, app: App): void {
   registerMailboxTools(server, app);
 }
 
-function buildMcpServer(app: App): McpServer {
+/** An operator's Claude does not even see the administrators' tools. */
+function buildMcpServer(app: App, role: Role): McpServer {
   const server = new McpServer(
     { name: "mail-router", title: app.config.instanceName, version: VERSION },
     { instructions: RULE_GUIDE },
   );
-  registerAll(server, app);
+  const register = server.registerTool.bind(server) as (name: string, ...rest: unknown[]) => unknown;
+  const target =
+    role === "admin"
+      ? server
+      : ({ registerTool: (name: string, ...rest: unknown[]) => (toolAllowed(name, role) ? register(name, ...rest) : undefined) } as unknown as McpServer);
+  registerAll(target, app);
   return server;
 }
 
 /** Stateless Streamable HTTP: one server and transport per request, JSON responses. */
-export async function handleMcpRequest(app: App, request: Request): Promise<Response> {
+export async function handleMcpRequest(app: App, request: Request, role: Role): Promise<Response> {
   if (request.method !== "POST") {
     return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
   }
-  const server = buildMcpServer(app);
+  const server = buildMcpServer(app, role);
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   try {
     await server.connect(transport);
@@ -67,9 +81,10 @@ export type ToolCallResult = { ok: true; value: unknown } | { ok: false; status:
 export function createToolRunner(app: App) {
   const collector = new ToolCollector();
   registerAll(collector as unknown as McpServer, app);
-  return async (name: string, args: unknown): Promise<ToolCallResult> => {
+  return async (name: string, args: unknown, role: Role): Promise<ToolCallResult> => {
     const tool = collector.tools.get(name);
     if (!tool) return { ok: false, status: 404, error: `Strumento sconosciuto: ${name}` };
+    if (!toolAllowed(name, role)) return { ok: false, status: 403, error: "Operazione riservata agli amministratori" };
     const parsed = z.object(tool.inputSchema).safeParse(args ?? {});
     if (!parsed.success) {
       const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "argomenti"}: ${issue.message}`).join("; ");

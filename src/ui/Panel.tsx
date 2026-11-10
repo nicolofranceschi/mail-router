@@ -8,8 +8,16 @@ import { Activity } from "./pages/Activity";
 import { DataPage } from "./pages/Data";
 import { Mailbox } from "./pages/Mailbox";
 import { Overview } from "./pages/Overview";
+import { Accounts } from "./pages/Accounts";
 import { Rules } from "./pages/Rules";
 import { Settings } from "./pages/Settings";
+import { Users } from "./pages/Users";
+
+export interface CurrentUser {
+  id: string;
+  name: string;
+  role: "admin" | "operator";
+}
 
 const PAGES = [
   { id: "panoramica", label: "Panoramica" },
@@ -17,23 +25,30 @@ const PAGES = [
   { id: "attivita", label: "Attività" },
   { id: "posta", label: "Posta" },
   { id: "dati", label: "Dati di riferimento" },
+  { id: "caselle", label: "Caselle di posta", admin: true },
+  { id: "utenti", label: "Utenti", admin: true },
   { id: "impostazioni", label: "Impostazioni" },
 ] as const;
 
 type PageId = (typeof PAGES)[number]["id"];
 
-function currentPage(): PageId {
-  const id = window.location.hash.replace(/^#\/?/, "").split("?")[0];
-  return (PAGES.find((page) => page.id === id)?.id ?? "panoramica") as PageId;
+function pagesFor(user: CurrentUser) {
+  return PAGES.filter((page) => !("admin" in page) || user.role === "admin");
 }
 
-export function Panel({ instanceName, version, onLogout }: { instanceName: string; version: string; onLogout: () => void }) {
-  const [page, setPage] = useState<PageId>(currentPage);
+function currentPage(user: CurrentUser): PageId {
+  const id = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+  return (pagesFor(user).find((page) => page.id === id)?.id ?? "panoramica") as PageId;
+}
+
+export function Panel({ instanceName, version, user, onLogout }: { instanceName: string; version: string; user: CurrentUser; onLogout: () => void }) {
+  const [page, setPage] = useState<PageId>(() => currentPage(user));
   useEffect(() => {
-    const onHash = () => setPage(currentPage());
+    const onHash = () => setPage(currentPage(user));
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+  }, [user]);
+  const isAdmin = user.role === "admin";
 
   const status = useLoad(() => tool("get_status"), [], 20_000);
   const mode: string = status.data?.mode ?? "shadow";
@@ -46,7 +61,7 @@ export function Panel({ instanceName, version, onLogout }: { instanceName: strin
           <span className="ellipsis">Mail Router</span>
         </div>
         <div className="nav-items">
-          {PAGES.map((entry) => (
+          {pagesFor(user).map((entry) => (
             <a
               key={entry.id}
               href={`#/${entry.id}`}
@@ -59,6 +74,9 @@ export function Panel({ instanceName, version, onLogout }: { instanceName: strin
           ))}
         </div>
         <div className="sidebar-foot">
+          <span className="sidebar-user ellipsis" title={`${user.name} (${isAdmin ? "amministratore" : "operatore"})`}>
+            {user.name} · {isAdmin ? "amministratore" : "operatore"}
+          </span>
           <span>Versione {version}</span>
           <a
             href="#"
@@ -85,7 +103,9 @@ export function Panel({ instanceName, version, onLogout }: { instanceName: strin
           {page === "attivita" ? <Activity /> : null}
           {page === "posta" ? <Mailbox status={status.data} /> : null}
           {page === "dati" ? <DataPage /> : null}
-          {page === "impostazioni" ? <Settings /> : null}
+          {page === "caselle" && isAdmin ? <Accounts onChanged={status.reload} /> : null}
+          {page === "utenti" && isAdmin ? <Users me={user.id} /> : null}
+          {page === "impostazioni" ? <Settings isAdmin={isAdmin} /> : null}
         </main>
       </div>
     </div>

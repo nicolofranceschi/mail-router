@@ -1,4 +1,4 @@
-import { bearerToken, FailureLimiter, ipAllowed, parseNetworks, tokenMatches } from "../auth";
+import { authenticateKey, bearerToken, FailureLimiter, ipAllowed, parseNetworks } from "../auth";
 import { APP_NAME, VERSION } from "../config";
 import { log } from "../log";
 import { createToolRunner, handleMcpRequest } from "../mcp/server";
@@ -38,13 +38,14 @@ export function startServer(app: App): ReturnType<typeof Bun.serve> {
 
       if (pathname === "/mcp") {
         if (limiter.blocked(ip)) return new Response("Too many attempts", { status: 429 });
-        if (!tokenMatches(app.store, bearerToken(request))) {
+        const user = authenticateKey(app.store, bearerToken(request));
+        if (!user) {
           limiter.fail(ip);
           log.warn(`MCP: chiave non valida da ${ip}`);
           return new Response("Unauthorized", { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="mail-router"' } });
         }
         limiter.reset(ip);
-        return handleMcpRequest(app, request);
+        return handleMcpRequest(app, request, user.role);
       }
 
       if (pathname.startsWith("/api/")) return handleApi(app, request, { ip, limiter, runTool });
