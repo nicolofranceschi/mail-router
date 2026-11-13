@@ -7,6 +7,7 @@ import { buildForward, buildMessage, buildReply, type ComposedMessage } from "..
 import { buildRuleEmail, parseRaw } from "../../mail/parse";
 import { extractPec } from "../../mail/pec";
 import { isValidEmail, normalizeAddress } from "../../rules/decision";
+import type { Scope } from "../../scope";
 import type { App } from "../../service/app";
 import {
   fetchMessage,
@@ -80,7 +81,7 @@ function requireSmtp(account: AccountRuntime): void {
   if (!account.config.smtp) throw new Error(`L'account ${account.config.id} non ha un server SMTP configurato`);
 }
 
-export function registerMailboxTools(server: McpServer, app: App): void {
+export function registerMailboxTools(server: McpServer, app: App, scope: Scope): void {
   server.registerTool(
     "list_folders",
     {
@@ -88,7 +89,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
       description: "Lists the account's IMAP folders with their exact paths (use these paths in rules' moveTo and in the other tools).",
       inputSchema: { ...accountArg },
     },
-    handler("list_folders", ({ account }: { account?: string }) => listFolders(app.account(account))),
+    handler("list_folders", ({ account }: { account?: string }) => listFolders(scope.account(app, account))),
   );
 
   server.registerTool(
@@ -107,7 +108,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
     handler(
       "list_emails",
       async (args: { account?: string; folder?: string; limit?: number; beforeUid?: number; unseenOnly?: boolean }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         const folder = args.folder ?? app.defaultFolder(account);
         const result = await searchMessages(account, folder, args.unseenOnly ? { unseen: true } : {}, {
           limit: args.limit ?? 20,
@@ -136,7 +137,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
       "search_emails",
       async (args: SearchCriteria & { account?: string; folder?: string; limit?: number; beforeUid?: number }) => {
         const { account: accountId, folder: folderArgValue, limit, beforeUid, ...criteria } = args;
-        const account = app.account(accountId);
+        const account = scope.account(app, accountId);
         const folder = folderArgValue ?? app.defaultFolder(account);
         const result = await searchMessages(account, folder, criteria, { limit: limit ?? 30, beforeUid });
         return { folder, ...result };
@@ -161,7 +162,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
     handler(
       "get_email",
       async (args: { account?: string; folder?: string; uid: number; maxChars?: number; includeHeaders?: boolean }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         const folder = args.folder ?? app.defaultFolder(account);
         const message = await fetchMessage(account, folder, args.uid);
         const parsed = await parseRaw(message.raw);
@@ -217,7 +218,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
         asAttachment?: boolean;
         replyToSender?: boolean;
       }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         requireSmtp(account);
         const folder = args.folder ?? app.defaultFolder(account);
         const to = addresses(args.to);
@@ -269,7 +270,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
     handler(
       "reply_email",
       async (args: { account?: string; folder?: string; uid: number; body: string; replyAll?: boolean }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         requireSmtp(account);
         const folder = args.folder ?? app.defaultFolder(account);
         const message = await fetchMessage(account, folder, args.uid);
@@ -312,7 +313,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
     handler(
       "send_email",
       async (args: { account?: string; to: string | string[]; cc?: string | string[]; subject: string; body: string }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         requireSmtp(account);
         const to = addresses(args.to);
         const cc = addresses(args.cc);
@@ -339,7 +340,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
       inputSchema: { ...accountArg, ...folderArg, ...uidArg, target: z.string().min(1) },
     },
     handler("move_email", async (args: { account?: string; folder?: string; uid: number; target: string }) => {
-      const account = app.account(args.account);
+      const account = scope.account(app, args.account);
       const folder = args.folder ?? app.defaultFolder(account);
       const entry = { type: "move" as const, folder, uid: args.uid, payload: { target: args.target } };
       try {
@@ -370,7 +371,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
     handler(
       "set_flags",
       async (args: { account?: string; folder?: string; uid: number; add?: string[]; remove?: string[] }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         const folder = args.folder ?? app.defaultFolder(account);
         const add = args.add ?? [];
         const remove = args.remove ?? [];
@@ -396,7 +397,7 @@ export function registerMailboxTools(server: McpServer, app: App): void {
       inputSchema: { ...accountArg, ...folderArg, ...uidArg },
     },
     handler("delete_email", async (args: { account?: string; folder?: string; uid: number }) => {
-      const account = app.account(args.account);
+      const account = scope.account(app, args.account);
       const trash = account.config.trashFolder;
       if (!trash) throw new Error("Nessuna cartella cestino configurata (trashFolder): usa move_email verso una cartella esistente");
       const folder = args.folder ?? app.defaultFolder(account);

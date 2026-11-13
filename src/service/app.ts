@@ -9,6 +9,7 @@ import type { Identity } from "../mail/compose";
 import type { EngineRule } from "../rules/engine";
 import { RuleSandbox } from "../rules/sandbox";
 import { resolveSecret } from "../secrets";
+import type { Scope } from "../scope";
 import { Store, type EngineMode } from "../store";
 import { Executor } from "./executor";
 import { FolderWatcher } from "./watcher";
@@ -46,6 +47,12 @@ export class App {
     const store = new Store(path.join(home, DB_FILE));
     const sandbox = await RuleSandbox.create();
     const app = new App(home, config, store, sandbox);
+    if (config.accounts.length === 1) {
+      const adopted = store.adoptShared(config.accounts[0]!.id);
+      if (adopted.rules || adopted.data) {
+        log.info(`${adopted.rules} regole e ${adopted.data} dati di riferimento assegnati alla casella ${config.accounts[0]!.id}`);
+      }
+    }
     if (options.resolveSecrets !== false) {
       for (const account of config.accounts) {
         app.accounts.set(account.id, {
@@ -144,12 +151,15 @@ export class App {
     return addresses.filter((address) => address.includes("@"));
   }
 
-  engineRules(): EngineRule[] {
-    return this.store.listRules().filter((rule) => rule.mode !== "disabled");
+  /** The rules a message of this mailbox goes through. */
+  engineRules(accountId: string): EngineRule[] {
+    return this.store.rulesForAccount(accountId).filter((rule) => rule.mode !== "disabled");
   }
 
-  status() {
-    const rules = this.store.listRules();
+  /** The service as the caller may see it: only their mailboxes, folders, queue and rules. */
+  status(scope: Scope) {
+    const visible = scope.accountFilter(this);
+    const rules = this.store.listRules(visible ? { accounts: visible } : {});
     return {
       instance: this.config.instanceName,
       version: VERSION,
@@ -157,7 +167,7 @@ export class App {
       startedAt: this.startedAt.toISOString(),
       uptimeMinutes: Math.round((Date.now() - this.startedAt.getTime()) / 60_000),
       timeZone: this.config.timeZone,
-      accounts: this.config.accounts.map((account) => ({
+      accounts: this.config.accounts.filter((account) => scope.canSee(account.id)).map((account) => ({
         id: account.id,
         user: account.imap.user,
         watch: account.watch,
@@ -169,8 +179,8 @@ export class App {
         sentFolder: account.sentFolder ?? null,
         trashFolder: account.trashFolder ?? null,
       })),
-      watchers: this.watchers.map((watcher) => watcher.snapshot()),
-      outbox: this.store.outboxCounts(),
+      watchers: this.watchers.map((watcher) => watcher.snapshot()).filter((watcher) => scope.canSee(watcher.account)),
+      outbox: this.store.outboxCounts(visible),
       rules: {
         total: rules.length,
         enabled: rules.filter((rule) => rule.mode === "enabled").length,

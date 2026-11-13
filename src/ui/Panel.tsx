@@ -95,14 +95,20 @@ export function Panel({ instanceName, version, user, onLogout }: { instanceName:
       <div className="main">
         <header className="topbar">
           <span className="topbar-title ellipsis">{instanceName}</span>
-          <ModeSwitch mode={mode} onChanged={status.reload} />
+          {isAdmin ? (
+            <ModeSwitch mode={mode} onChanged={status.reload} />
+          ) : (
+            <span className="muted small" title="La modalità del servizio la cambia un amministratore; le tue regole le accendi e spegni dalla pagina Regole">
+              Servizio: {ENGINE_MODE[mode]?.label}
+            </span>
+          )}
         </header>
         <main className="content">
           {page === "panoramica" ? <Overview status={status} /> : null}
-          {page === "regole" ? <Rules /> : null}
+          {page === "regole" ? <Rules status={status.data} /> : null}
           {page === "attivita" ? <Activity /> : null}
           {page === "posta" ? <Mailbox status={status.data} /> : null}
-          {page === "dati" ? <DataPage /> : null}
+          {page === "dati" ? <DataPage status={status.data} isAdmin={isAdmin} /> : null}
           {page === "caselle" && isAdmin ? <Accounts onChanged={status.reload} /> : null}
           {page === "utenti" && isAdmin ? <Users me={user.id} /> : null}
           {page === "impostazioni" ? <Settings isAdmin={isAdmin} /> : null}

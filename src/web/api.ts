@@ -37,6 +37,7 @@ import {
   writeConfig,
 } from "../settings";
 import { accessInfo } from "../access";
+import { Scope } from "../scope";
 import { errorJson, errorResponse, HttpError, json, readJson } from "./http";
 
 export interface ApiContext {
@@ -59,11 +60,23 @@ function currentUser(app: App, request: Request): User | null {
   return bearer ? authenticateKey(app.store, bearer) : null;
 }
 
-function publicUser(user: User) {
+const accountList = z.array(z.string()).max(200);
+
+/** Only mailboxes that exist: a typo would silently give no access. */
+function checkAccounts(app: App, ids: string[]): string[] {
+  const known = new Set(diskConfig(app).accounts.map((account) => account.id));
+  const unknown = ids.filter((id) => !known.has(id));
+  if (unknown.length) throw new HttpError(400, `Casella sconosciuta: ${unknown.join(", ")}`);
+  return [...new Set(ids)];
+}
+
+function publicUser(app: App, user: User) {
   return {
     id: user.id,
     name: user.name,
     role: user.role,
+    /** The mailboxes an operator works on; an administrator sees all of them. */
+    accounts: app.store.userAccounts(user.id),
     keyHint: user.key_hint ? `mr_…${user.key_hint}` : null,
     createdAt: user.created_at,
     lastUsedAt: user.last_used_at,
@@ -118,7 +131,7 @@ export async function handleApi(app: App, request: Request, ctx: ApiContext): Pr
       return json({
         mode: "service",
         authenticated: Boolean(user),
-        user: user ? publicUser(user) : null,
+        user: user ? publicUser(app, user) : null,
         instanceName: app.config.instanceName,
         version: VERSION,
       });
@@ -157,14 +170,14 @@ export async function handleApi(app: App, request: Request, ctx: ApiContext): Pr
     const tool = /^\/api\/tools\/([a-z_]+)$/.exec(pathname);
     if (tool && method === "POST") {
       const { args } = await readJson(request);
-      const result = await ctx.runTool(tool[1]!, args ?? {}, user.role);
+      const result = await ctx.runTool(tool[1]!, args ?? {}, Scope.forUser(app, user));
       return result.ok ? json(result.value) : errorJson(result.status, result.error);
     }
 
     // ---- own access: every user ------------------------------------------
 
     if (pathname === "/api/access" && method === "GET") {
-      return json({ user: publicUser(user), access: accessInfo(app.config.mcp, undefined, origin) });
+      return json({ user: publicUser(app, user), access: accessInfo(app.config.mcp, undefined, origin) });
     }
 
     if (pathname === "/api/access/rotate" && method === "POST") {
@@ -246,14 +259,16 @@ export async function handleApi(app: App, request: Request, ctx: ApiContext): Pr
     // ---- users ------------------------------------------------------------
 
     if (pathname === "/api/users" && method === "GET") {
-      return json({ users: app.store.listUsers().map(publicUser), me: user.id });
+      return json({ users: app.store.listUsers().map((entry) => publicUser(app, entry)), me: user.id });
     }
 
     if (pathname === "/api/users/create" && method === "POST") {
       const body = await readJson(request);
+      const accounts = checkAccounts(app, accountList.parse(body.accounts ?? []));
       const created = createUser(app.store, userName.parse(body.name), roleSchema.parse(body.role));
+      app.store.setUserAccounts(created.user.id, accounts);
       log.info(`utente «${created.user.name}» (${ROLE_LABEL[created.user.role]}) creato da «${user.name}» (${ctx.ip})`);
-      return json({ user: publicUser(created.user), key: created.key, ...accessInfo(app.config.mcp, created.key, origin) });
+      return json({ user: publicUser(app, created.user), key: created.key, ...accessInfo(app.config.mcp, created.key, origin) });
     }
 
     if (pathname === "/api/users/update" && method === "POST") {
@@ -265,9 +280,14 @@ export async function handleApi(app: App, request: Request, ctx: ApiContext): Pr
       if (name && app.store.listUsers().some((other) => other.id !== target.id && other.name.toLowerCase() === name.toLowerCase())) {
         throw new HttpError(409, `Esiste già un utente di nome «${name}»`);
       }
+      const accounts = body.accounts === undefined ? undefined : checkAccounts(app, accountList.parse(body.accounts));
       const updated = app.store.updateUser(target.id, { name, role })!;
-      log.info(`utente «${updated.name}» aggiornato da «${user.name}» (${ROLE_LABEL[updated.role]})`);
-      return json({ user: publicUser(updated) });
+      if (accounts) app.store.setUserAccounts(target.id, accounts);
+      log.info(
+        `utente «${updated.name}» aggiornato da «${user.name}» (${ROLE_LABEL[updated.role]}` +
+          `${accounts ? `, caselle: ${accounts.join(", ") || "nessuna"}` : ""})`,
+      );
+      return json({ user: publicUser(app, updated) });
     }
 
     if (pathname === "/api/users/rotate" && method === "POST") {

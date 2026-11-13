@@ -6,6 +6,7 @@ import { z, type ZodRawShape } from "zod";
 import type { Role } from "../auth";
 import { VERSION } from "../config";
 import { errorMessage, log } from "../log";
+import type { Scope } from "../scope";
 import type { App } from "../service/app";
 import { RULE_GUIDE } from "./guide";
 import { registerDataTools } from "./tools/data";
@@ -13,41 +14,46 @@ import { registerEngineTools } from "./tools/engine";
 import { registerMailboxTools } from "./tools/mailbox";
 import { registerRuleTools } from "./tools/rules";
 
-/** Tools that change the service's configuration: administrators only. */
-export const ADMIN_TOOLS = new Set(["set_account_options"]);
+/**
+ * Tools that act on the whole service, every mailbox at once: administrators
+ * only. Operators switch their own rules on and off instead of the engine.
+ */
+export const ADMIN_TOOLS = new Set(["set_account_options", "set_mode", "get_logs"]);
 
 export function toolAllowed(name: string, role: Role): boolean {
   return role === "admin" || !ADMIN_TOOLS.has(name);
 }
 
-function registerAll(server: McpServer, app: App): void {
-  registerEngineTools(server, app);
-  registerRuleTools(server, app);
-  registerDataTools(server, app);
-  registerMailboxTools(server, app);
+/** Every tool gets the caller's scope: it only reaches the mailboxes the caller may see. */
+function registerAll(server: McpServer, app: App, scope: Scope): void {
+  registerEngineTools(server, app, scope);
+  registerRuleTools(server, app, scope);
+  registerDataTools(server, app, scope);
+  registerMailboxTools(server, app, scope);
 }
 
 /** An operator's Claude does not even see the administrators' tools. */
-function buildMcpServer(app: App, role: Role): McpServer {
+function buildMcpServer(app: App, scope: Scope): McpServer {
   const server = new McpServer(
     { name: "mail-router", title: app.config.instanceName, version: VERSION },
     { instructions: RULE_GUIDE },
   );
   const register = server.registerTool.bind(server) as (name: string, ...rest: unknown[]) => unknown;
-  const target =
-    role === "admin"
-      ? server
-      : ({ registerTool: (name: string, ...rest: unknown[]) => (toolAllowed(name, role) ? register(name, ...rest) : undefined) } as unknown as McpServer);
-  registerAll(target, app);
+  const target = scope.isAdmin
+    ? server
+    : ({
+        registerTool: (name: string, ...rest: unknown[]) => (toolAllowed(name, scope.role) ? register(name, ...rest) : undefined),
+      } as unknown as McpServer);
+  registerAll(target, app, scope);
   return server;
 }
 
 /** Stateless Streamable HTTP: one server and transport per request, JSON responses. */
-export async function handleMcpRequest(app: App, request: Request, role: Role): Promise<Response> {
+export async function handleMcpRequest(app: App, request: Request, scope: Scope): Promise<Response> {
   if (request.method !== "POST") {
     return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
   }
-  const server = buildMcpServer(app, role);
+  const server = buildMcpServer(app, scope);
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   try {
     await server.connect(transport);
@@ -79,12 +85,12 @@ class ToolCollector {
 export type ToolCallResult = { ok: true; value: unknown } | { ok: false; status: number; error: string };
 
 export function createToolRunner(app: App) {
-  const collector = new ToolCollector();
-  registerAll(collector as unknown as McpServer, app);
-  return async (name: string, args: unknown, role: Role): Promise<ToolCallResult> => {
+  return async (name: string, args: unknown, scope: Scope): Promise<ToolCallResult> => {
+    const collector = new ToolCollector();
+    registerAll(collector as unknown as McpServer, app, scope);
     const tool = collector.tools.get(name);
     if (!tool) return { ok: false, status: 404, error: `Strumento sconosciuto: ${name}` };
-    if (!toolAllowed(name, role)) return { ok: false, status: 403, error: "Operazione riservata agli amministratori" };
+    if (!toolAllowed(name, scope.role)) return { ok: false, status: 403, error: "Operazione riservata agli amministratori" };
     const parsed = z.object(tool.inputSchema).safeParse(args ?? {});
     if (!parsed.success) {
       const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "argomenti"}: ${issue.message}`).join("; ");

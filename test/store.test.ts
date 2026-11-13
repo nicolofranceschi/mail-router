@@ -43,7 +43,7 @@ function action(partial: Partial<ActionInput>): ActionInput {
 
 describe("rules", () => {
   test("create, update, delete and restore keep a version history", () => {
-    const created = store.createRule({ name: "Paghe", description: "", code: "function rule(){return null}", mode: "shadow", priority: 10 });
+    const created = store.createRule({ account: "posta", name: "Paghe", description: "", code: "function rule(){return null}", mode: "shadow", priority: 10 });
     const updated = store.updateRule(created.id, { mode: "enabled", code: "function rule(){return {stop:true}}" });
     expect(updated.version).toBe(2);
     expect(store.getRule(created.id)?.mode).toBe("enabled");
@@ -56,18 +56,18 @@ describe("rules", () => {
   });
 
   test("rules are listed by priority", () => {
-    store.createRule({ name: "b", description: "", code: "x", mode: "enabled", priority: 50 });
-    store.createRule({ name: "a", description: "", code: "x", mode: "enabled", priority: 5 });
+    store.createRule({ account: "posta", name: "b", description: "", code: "x", mode: "enabled", priority: 50 });
+    store.createRule({ account: "posta", name: "a", description: "", code: "x", mode: "enabled", priority: 5 });
     expect(store.listRules().map((row) => row.name)).toEqual(["a", "b"]);
   });
 });
 
 describe("data", () => {
   test("values round-trip as JSON", () => {
-    store.setData("uffici", { paghe: ["p@azienda.it"] }, "Uffici");
-    expect(store.dataObject()).toEqual({ uffici: { paghe: ["p@azienda.it"] } });
-    expect(store.deleteData("uffici")).toBe(true);
-    expect(store.dataObject()).toEqual({});
+    store.setData("posta", "uffici", { paghe: ["p@azienda.it"] }, "Uffici");
+    expect(store.dataObject("posta")).toEqual({ uffici: { paghe: ["p@azienda.it"] } });
+    expect(store.deleteData("posta", "uffici")).toBe(true);
+    expect(store.dataObject("posta")).toEqual({});
   });
 });
 

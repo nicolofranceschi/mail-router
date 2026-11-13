@@ -1,6 +1,7 @@
 import { authenticateKey, bearerToken, FailureLimiter, ipAllowed, parseNetworks } from "../auth";
 import { APP_NAME, VERSION } from "../config";
 import { log } from "../log";
+import { Scope } from "../scope";
 import { createToolRunner, handleMcpRequest } from "../mcp/server";
 import type { App } from "../service/app";
 import indexHtml from "../ui/index.html";
@@ -45,7 +46,7 @@ export function startServer(app: App): ReturnType<typeof Bun.serve> {
           return new Response("Unauthorized", { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="mail-router"' } });
         }
         limiter.reset(ip);
-        return handleMcpRequest(app, request, user.role);
+        return handleMcpRequest(app, request, Scope.forUser(app, user));
       }
 
       if (pathname.startsWith("/api/")) return handleApi(app, request, { ip, limiter, runTool });

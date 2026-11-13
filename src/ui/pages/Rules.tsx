@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { AccountPicker, NoMailbox, SHARED, type AccountView } from "../AccountPicker";
 import { tool } from "../api";
 import { ActionChips, Badge, Button, Confirm, Empty, ErrorBox, Field, Modal, Spinner, useAction, useLoad } from "../components";
 import { formatDate, RULE_MODE } from "../format";
@@ -14,11 +15,27 @@ const TEMPLATE = `function rule(email, data, h) {
 }
 `;
 
-export function Rules() {
+/** Rules of the chosen mailbox; SHARED gathers those with no mailbox or a removed one. */
+function inMailbox(rule: { account: string | null }, chosen: string | undefined, accounts: AccountView[]): boolean {
+  if (chosen === SHARED) return rule.account === null || !accounts.some((entry) => entry.id === rule.account);
+  return rule.account === chosen;
+}
+
+export function Rules({ status }: { status: any }) {
+  const accounts: AccountView[] = status?.accounts ?? [];
   const rules = useLoad(() => tool("list_rules"), []);
+  const [accountId, setAccountId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const { run } = useAction();
+
+  const all: any[] = rules.data?.rules ?? [];
+  const deleted: any[] = rules.data?.deletedRules ?? [];
+  const orphans = [...all, ...deleted].some((rule) => inMailbox(rule, SHARED, accounts));
+  const account = accountId ?? accounts[0]?.id ?? (orphans ? SHARED : undefined);
+  const shown = all.filter((rule) => inMailbox(rule, account, accounts));
+  const shownDeleted = deleted.filter((rule) => inMailbox(rule, account, accounts));
+  const realAccount = account && account !== SHARED ? account : undefined;
 
   const setMode = (id: string, mode: string) =>
     run(async () => {
@@ -33,21 +50,42 @@ export function Rules() {
           <h1>Regole</h1>
           <p className="muted">
             Le regole le scrive Claude quando gliele chiedi a parole. Qui le controlli, le provi sulle mail vere e decidi quali
-            accendere. Vengono valutate dall'alto in basso.
+            accendere. Vengono valutate dall'alto in basso. Ogni casella ha le sue regole: valgono solo per la posta di
+            quella casella.
           </p>
         </div>
-        <Button onClick={() => setCreating(true)}>Nuova regola</Button>
+        <div className="row wrap">
+          <AccountPicker
+            accounts={accounts}
+            value={account}
+            onChange={(id) => {
+              setAccountId(id);
+              setSelected(null);
+            }}
+            sharedLabel={orphans ? "Senza casella o casella eliminata" : undefined}
+          />
+          <Button disabled={!realAccount} onClick={() => setCreating(true)}>
+            Nuova regola
+          </Button>
+        </div>
       </div>
 
+      {account === SHARED ? (
+        <div className="notice">
+          Queste regole non appartengono a nessuna casella in uso. Quelle senza casella, di prima che ogni casella avesse le
+          sue regole, valgono ancora per tutte le caselle; quelle di una casella eliminata non girano più. Apri una regola e
+          scegli la sua casella.
+        </div>
+      ) : null}
       {rules.error ? <ErrorBox error={rules.error} onRetry={rules.reload} /> : null}
-      {!rules.data ? (
-        <Spinner />
-      ) : (
+      {!rules.data && !rules.error ? <Spinner /> : null}
+      {rules.data && !account ? <NoMailbox /> : null}
+      {rules.data && account ? (
         <div className="split">
           <div className="card flush">
-            {rules.data.rules.length ? (
+            {shown.length ? (
               <div className="list">
-                {rules.data.rules.map((rule: any) => (
+                {shown.map((rule: any) => (
                   <div
                     key={rule.id}
                     className={`list-item clickable ${selected === rule.id ? "selected" : ""}`}
@@ -85,10 +123,10 @@ export function Rules() {
             ) : (
               <Empty>Nessuna regola. Chiedi a Claude di crearne una, oppure usa «Nuova regola».</Empty>
             )}
-            {rules.data.deletedRules?.length ? (
+            {shownDeleted.length ? (
               <div style={{ padding: "12px 18px", borderTop: "1px solid var(--border)" }} className="stack tight">
                 <span className="muted small">Eliminate di recente</span>
-                {rules.data.deletedRules.map((rule: any) => (
+                {shownDeleted.map((rule: any) => (
                   <div key={rule.id} className="row spread small">
                     <span className="ellipsis">{rule.name}</span>
                     <Button
@@ -111,6 +149,7 @@ export function Rules() {
             <RuleDetail
               key={selected}
               id={selected}
+              accounts={accounts}
               onChanged={rules.reload}
               onDeleted={() => {
                 setSelected(null);
@@ -121,9 +160,10 @@ export function Rules() {
             <div className="card muted">Seleziona una regola per vederne il codice, provarla o modificarla.</div>
           )}
         </div>
-      )}
-      {creating ? (
+      ) : null}
+      {creating && realAccount ? (
         <NewRule
+          account={realAccount}
           onClose={() => setCreating(false)}
           onCreated={(id) => {
             setCreating(false);
@@ -136,7 +176,17 @@ export function Rules() {
   );
 }
 
-function RuleDetail({ id, onChanged, onDeleted }: { id: string; onChanged: () => void; onDeleted: () => void }) {
+function RuleDetail({
+  id,
+  accounts,
+  onChanged,
+  onDeleted,
+}: {
+  id: string;
+  accounts: AccountView[];
+  onChanged: () => void;
+  onDeleted: () => void;
+}) {
   const rule = useLoad(() => tool("get_rule", { id, includeHistory: true }), [id]);
   const [draft, setDraft] = useState<{ name: string; description: string; priority: string; code: string } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -157,6 +207,9 @@ function RuleDetail({ id, onChanged, onDeleted }: { id: string; onChanged: () =>
     draft.description !== rule.data.description ||
     draft.priority !== String(rule.data.priority) ||
     draft.code !== rule.data.code;
+  const ownAccount = accounts.some((entry) => entry.id === rule.data.account);
+  // The mailbox is shown when there is a choice, or when the rule has none in use and needs one.
+  const showAccount = accounts.length > 1 || !ownAccount;
 
   return (
     <div className="card stack">
@@ -164,6 +217,32 @@ function RuleDetail({ id, onChanged, onDeleted }: { id: string; onChanged: () =>
         <h2 className="ellipsis">{rule.data.name}</h2>
         <Badge tone={RULE_MODE[rule.data.mode]?.tone}>{RULE_MODE[rule.data.mode]?.label}</Badge>
       </div>
+      {showAccount ? (
+        <Field label="Casella" hint="La regola vale solo per la posta di questa casella">
+          <select
+            className="input"
+            value={ownAccount ? rule.data.account : ""}
+            onChange={(event) =>
+              run(async () => {
+                await tool("update_rule", { id, account: event.target.value });
+                rule.reload();
+                onChanged();
+              }, `Regola spostata nella casella ${event.target.value}`)
+            }
+          >
+            {!ownAccount ? (
+              <option value="" disabled>
+                {rule.data.account ? `${rule.data.account} (eliminata)` : "Nessuna: vale per tutte"}
+              </option>
+            ) : null}
+            {accounts.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.id} ({entry.user})
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : null}
       <div className="form-grid">
         <Field label="Nome">
           <input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
@@ -238,7 +317,14 @@ function RuleDetail({ id, onChanged, onDeleted }: { id: string; onChanged: () =>
         </div>
       </details>
 
-      {testing ? <TestRun code={draft.code} title={`Prova: ${draft.name}`} onClose={() => setTesting(false)} /> : null}
+      {testing ? (
+        <TestRun
+          code={draft.code}
+          account={ownAccount ? rule.data.account : accounts[0]?.id}
+          title={`Prova: ${draft.name}`}
+          onClose={() => setTesting(false)}
+        />
+      ) : null}
       {confirmDelete ? (
         <Confirm
           title="Eliminare la regola?"
@@ -257,10 +343,13 @@ function RuleDetail({ id, onChanged, onDeleted }: { id: string; onChanged: () =>
   );
 }
 
-export function TestRun({ code, title, onClose }: { code?: string; title: string; onClose: () => void }) {
+export function TestRun({ code, account, title, onClose }: { code?: string; account?: string; title: string; onClose: () => void }) {
   const [last, setLast] = useState(50);
   const [showAll, setShowAll] = useState(false);
-  const report = useLoad(() => tool("test_rules", { ...(code ? { code } : {}), last, showAll }), [last, showAll]);
+  const report = useLoad(
+    () => tool("test_rules", { ...(code ? { code } : {}), ...(account ? { account } : {}), last, showAll }),
+    [last, showAll],
+  );
   return (
     <Modal title={title} onClose={onClose} wide>
       <div className="row wrap">
@@ -332,7 +421,7 @@ export function TestRun({ code, title, onClose }: { code?: string; title: string
   );
 }
 
-function NewRule({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+function NewRule({ account, onClose, onCreated }: { account: string; onClose: () => void; onCreated: (id: string) => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [code, setCode] = useState(TEMPLATE);
@@ -341,6 +430,7 @@ function NewRule({ onClose, onCreated }: { onClose: () => void; onCreated: (id: 
     <Modal title="Nuova regola" onClose={onClose} wide>
       <p className="muted small">
         Più semplice: chiedi a Claude di scriverla. Se la scrivi a mano, nasce «in prova» e non agisce finché non la attivi.
+        Vale solo per la casella <b>{account}</b>.
       </p>
       <Field label="Nome">
         <input className="input" value={name} onChange={(event) => setName(event.target.value)} autoFocus />
@@ -358,7 +448,7 @@ function NewRule({ onClose, onCreated }: { onClose: () => void; onCreated: (id: 
           busy={busy}
           disabled={!name.trim()}
           onClick={async () => {
-            const created = await run(() => tool("create_rule", { name, description, code }), "Regola creata in prova");
+            const created = await run(() => tool("create_rule", { account, name, description, code }), "Regola creata in prova");
             if (created) onCreated(created.created.id);
           }}
         >

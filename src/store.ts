@@ -21,6 +21,8 @@ export type ActionStatus =
 
 export interface RuleRow {
   id: string;
+  /** The mailbox the rule belongs to; null only for rules from before mailboxes had own rules (they run on every mailbox). */
+  account: string | null;
   name: string;
   description: string;
   code: string;
@@ -33,6 +35,7 @@ export interface RuleRow {
 
 export interface RuleVersionRow {
   rule_id: string;
+  account: string | null;
   version: number;
   change: "created" | "updated" | "deleted";
   name: string;
@@ -44,6 +47,8 @@ export interface RuleVersionRow {
 }
 
 export interface DataRow {
+  /** "" for entries from before mailboxes had own data: every mailbox's rules see them. */
+  account: string;
   key: string;
   value: string;
   description: string;
@@ -147,7 +152,7 @@ export interface RuleResultRow {
   duration_ms: number;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 export const MIGRATIONS: Record<number, string> = {
   1: `
@@ -280,7 +285,41 @@ export const MIGRATIONS: Record<number, string> = {
     DELETE FROM ui_sessions;
     ALTER TABLE ui_sessions ADD COLUMN user_id TEXT REFERENCES users (id) ON DELETE CASCADE;
   `,
+  // Every mailbox has its own rules and reference data, and every user the
+  // mailboxes they work on. Existing rules (account NULL) and data (account '')
+  // keep applying to every mailbox until they are given one.
+  4: `
+    ALTER TABLE rules ADD COLUMN account TEXT;
+    ALTER TABLE rule_versions ADD COLUMN account TEXT;
+    CREATE INDEX rules_account ON rules (account);
+
+    CREATE TABLE data_entries_new (
+      account TEXT NOT NULL DEFAULT '',
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account, key)
+    );
+    INSERT INTO data_entries_new (account, key, value, description, updated_at)
+      SELECT '', key, value, description, updated_at FROM data_entries;
+    DROP TABLE data_entries;
+    ALTER TABLE data_entries_new RENAME TO data_entries;
+
+    CREATE TABLE user_accounts (
+      user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL,
+      PRIMARY KEY (user_id, account_id)
+    );
+  `,
 };
+
+/** SQL list of named parameters for an IN clause, with their values. */
+function inList(prefix: string, values: string[]): { sql: string; params: Record<string, string> } {
+  const params: Record<string, string> = {};
+  values.forEach((value, index) => (params[`${prefix}${index}`] = value));
+  return { sql: values.length ? values.map((_, index) => `$${prefix}${index}`).join(", ") : "NULL", params };
+}
 
 export type UserRole = "admin" | "operator";
 
@@ -482,6 +521,23 @@ export class Store {
     return this.db.query("DELETE FROM users WHERE id = $id").run({ id }).changes > 0;
   }
 
+  /** The mailboxes an operator works on (administrators see every mailbox whatever is stored here). */
+  userAccounts(userId: string): string[] {
+    return (
+      this.db.query("SELECT account_id FROM user_accounts WHERE user_id = $userId ORDER BY account_id").all({ userId }) as {
+        account_id: string;
+      }[]
+    ).map((row) => row.account_id);
+  }
+
+  setUserAccounts(userId: string, accountIds: string[]): void {
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM user_accounts WHERE user_id = $userId").run({ userId });
+      const insert = this.db.query("INSERT OR IGNORE INTO user_accounts (user_id, account_id) VALUES ($userId, $accountId)");
+      for (const accountId of accountIds) insert.run({ userId, accountId });
+    })();
+  }
+
   touchUser(id: string): void {
     this.db.query("UPDATE users SET last_used_at = $now WHERE id = $id").run({ id, now: nowIso() });
   }
@@ -492,10 +548,40 @@ export class Store {
 
   // ---- rules ------------------------------------------------------------
 
-  listRules(): RuleRow[] {
+  /**
+   * Rules in evaluation order. `accounts`: only the rules of these mailboxes
+   * (plus, with includeShared, the old ones without a mailbox); omitted: all.
+   */
+  listRules(filter: { accounts?: string[]; includeShared?: boolean } = {}): RuleRow[] {
+    if (!filter.accounts) return this.db.query("SELECT * FROM rules ORDER BY priority ASC, created_at ASC").all() as RuleRow[];
+    const list = inList("a", filter.accounts);
+    const shared = filter.includeShared ? " OR account IS NULL" : "";
     return this.db
-      .query("SELECT * FROM rules ORDER BY priority ASC, created_at ASC")
-      .all() as RuleRow[];
+      .query(`SELECT * FROM rules WHERE account IN (${list.sql})${shared} ORDER BY priority ASC, created_at ASC`)
+      .all(list.params) as RuleRow[];
+  }
+
+  /** The rules a message in this mailbox goes through: its own and the old ones without a mailbox. */
+  rulesForAccount(account: string): RuleRow[] {
+    return this.listRules({ accounts: [account], includeShared: true });
+  }
+
+  /**
+   * With a single mailbox, rules and data from before mailboxes had their own
+   * become that mailbox's: there is no doubt where they belong.
+   */
+  adoptShared(account: string): { rules: number; data: number } {
+    return this.db.transaction(() => {
+      const rules = this.db.query("UPDATE rules SET account = $account WHERE account IS NULL").run({ account }).changes;
+      this.db.query("UPDATE rule_versions SET account = $account WHERE account IS NULL").run({ account });
+      const data = this.db
+        .query(
+          `UPDATE data_entries SET account = $account WHERE account = ''
+             AND key NOT IN (SELECT key FROM data_entries WHERE account = $account)`,
+        )
+        .run({ account }).changes;
+      return { rules, data };
+    })();
   }
 
   getRule(id: string): RuleRow | null {
@@ -503,6 +589,7 @@ export class Store {
   }
 
   createRule(input: {
+    account: string;
     name: string;
     description: string;
     code: string;
@@ -514,8 +601,8 @@ export class Store {
     this.db.transaction(() => {
       this.db
         .query(
-          `INSERT INTO rules (id, name, description, code, mode, priority, version, created_at, updated_at)
-           VALUES ($id, $name, $description, $code, $mode, $priority, $version, $created_at, $updated_at)`,
+          `INSERT INTO rules (id, account, name, description, code, mode, priority, version, created_at, updated_at)
+           VALUES ($id, $account, $name, $description, $code, $mode, $priority, $version, $created_at, $updated_at)`,
         )
         .run({ ...row });
       this.saveVersion(row, "created");
@@ -525,7 +612,7 @@ export class Store {
 
   updateRule(
     id: string,
-    patch: Partial<Pick<RuleRow, "name" | "description" | "code" | "mode" | "priority">>,
+    patch: Partial<Pick<RuleRow, "account" | "name" | "description" | "code" | "mode" | "priority">>,
   ): RuleRow {
     const current = this.getRule(id);
     if (!current) throw new Error(`Regola ${id} non trovata`);
@@ -538,11 +625,12 @@ export class Store {
     this.db.transaction(() => {
       this.db
         .query(
-          `UPDATE rules SET name = $name, description = $description, code = $code, mode = $mode,
+          `UPDATE rules SET account = $account, name = $name, description = $description, code = $code, mode = $mode,
              priority = $priority, version = $version, updated_at = $updated_at WHERE id = $id`,
         )
         .run({
           id,
+          account: next.account,
           name: next.name,
           description: next.description,
           code: next.code,
@@ -573,6 +661,7 @@ export class Store {
       .get({ id, version }) as RuleVersionRow | null;
     if (!snapshot) throw new Error(`Versione ${version} della regola ${id} non trovata`);
     const fields = {
+      account: snapshot.account,
       name: snapshot.name,
       description: snapshot.description,
       code: snapshot.code,
@@ -588,8 +677,8 @@ export class Store {
     this.db.transaction(() => {
       this.db
         .query(
-          `INSERT INTO rules (id, name, description, code, mode, priority, version, created_at, updated_at)
-           VALUES ($id, $name, $description, $code, $mode, $priority, $version, $created_at, $updated_at)`,
+          `INSERT INTO rules (id, account, name, description, code, mode, priority, version, created_at, updated_at)
+           VALUES ($id, $account, $name, $description, $code, $mode, $priority, $version, $created_at, $updated_at)`,
         )
         .run({ ...row });
       this.saveVersion(row, "created");
@@ -603,24 +692,37 @@ export class Store {
       .all({ id }) as RuleVersionRow[];
   }
 
-  deletedRules(): RuleVersionRow[] {
+  /** The mailbox a rule belongs to, also for a deleted one (from its last saved version); undefined when unknown. */
+  ruleAccount(id: string): string | null | undefined {
+    const live = this.getRule(id);
+    if (live) return live.account;
+    const row = this.db
+      .query("SELECT account FROM rule_versions WHERE rule_id = $id ORDER BY version DESC LIMIT 1")
+      .get({ id }) as { account: string | null } | null;
+    return row ? row.account : undefined;
+  }
+
+  deletedRules(filter: { accounts?: string[] } = {}): RuleVersionRow[] {
+    const list = filter.accounts ? inList("a", filter.accounts) : null;
     return this.db
       .query(
         `SELECT v.* FROM rule_versions v
          WHERE v.change = 'deleted' AND NOT EXISTS (SELECT 1 FROM rules r WHERE r.id = v.rule_id)
+         ${list ? `AND v.account IN (${list.sql})` : ""}
          ORDER BY v.saved_at DESC`,
       )
-      .all() as RuleVersionRow[];
+      .all(list?.params ?? {}) as RuleVersionRow[];
   }
 
   private saveVersion(row: RuleRow, change: RuleVersionRow["change"]): void {
     this.db
       .query(
-        `INSERT INTO rule_versions (rule_id, version, change, name, description, code, mode, priority, saved_at)
-         VALUES ($rule_id, $version, $change, $name, $description, $code, $mode, $priority, $saved_at)`,
+        `INSERT INTO rule_versions (rule_id, account, version, change, name, description, code, mode, priority, saved_at)
+         VALUES ($rule_id, $account, $version, $change, $name, $description, $code, $mode, $priority, $saved_at)`,
       )
       .run({
         rule_id: row.id,
+        account: row.account,
         version: row.version,
         change,
         name: row.name,
@@ -659,30 +761,34 @@ export class Store {
 
   // ---- data -------------------------------------------------------------
 
-  listData(): DataRow[] {
-    return this.db.query("SELECT * FROM data_entries ORDER BY key").all() as DataRow[];
+  /** One mailbox's reference data; account "" holds the old entries every mailbox shares. */
+  listData(account: string): DataRow[] {
+    return this.db.query("SELECT * FROM data_entries WHERE account = $account ORDER BY key").all({ account }) as DataRow[];
   }
 
-  getData(key: string): DataRow | null {
-    return (this.db.query("SELECT * FROM data_entries WHERE key = $key").get({ key }) as DataRow | null) ?? null;
+  getData(account: string, key: string): DataRow | null {
+    return (
+      (this.db.query("SELECT * FROM data_entries WHERE account = $account AND key = $key").get({ account, key }) as DataRow | null) ?? null
+    );
   }
 
-  setData(key: string, value: unknown, description: string): void {
+  setData(account: string, key: string, value: unknown, description: string): void {
     this.db
       .query(
-        `INSERT INTO data_entries (key, value, description, updated_at) VALUES ($key, $value, $description, $now)
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value, description = excluded.description, updated_at = excluded.updated_at`,
+        `INSERT INTO data_entries (account, key, value, description, updated_at) VALUES ($account, $key, $value, $description, $now)
+         ON CONFLICT (account, key) DO UPDATE SET value = excluded.value, description = excluded.description, updated_at = excluded.updated_at`,
       )
-      .run({ key, value: JSON.stringify(value), description, now: nowIso() });
+      .run({ account, key, value: JSON.stringify(value), description, now: nowIso() });
   }
 
-  deleteData(key: string): boolean {
-    return this.db.query("DELETE FROM data_entries WHERE key = $key").run({ key }).changes > 0;
+  deleteData(account: string, key: string): boolean {
+    return this.db.query("DELETE FROM data_entries WHERE account = $account AND key = $key").run({ account, key }).changes > 0;
   }
 
-  dataObject(): Record<string, unknown> {
+  /** What a rule of this mailbox receives as `data`: the shared old entries, overridden by the mailbox's own. */
+  dataObject(account: string): Record<string, unknown> {
     const out: Record<string, unknown> = {};
-    for (const row of this.listData()) out[row.key] = JSON.parse(row.value);
+    for (const row of [...this.listData(""), ...(account ? this.listData(account) : [])]) out[row.key] = JSON.parse(row.value);
     return out;
   }
 
@@ -884,9 +990,10 @@ export class Store {
       .run({ reason, now: nowIso() }).changes;
   }
 
-  retryErroredActions(id?: number): number {
-    const where = id === undefined ? "" : " AND id = $id";
-    const selected: Record<string, number> = id === undefined ? {} : { id };
+  retryErroredActions(id?: number, accounts?: string[]): number {
+    const list = accounts ? inList("a", accounts) : null;
+    const where = (id === undefined ? "" : " AND id = $id") + (list ? ` AND account IN (${list.sql})` : "");
+    const selected: Record<string, number | string> = { ...(id === undefined ? {} : { id }), ...(list?.params ?? {}) };
     const now = nowIso();
     return this.db.transaction(() => {
       this.db
@@ -905,20 +1012,31 @@ export class Store {
     })();
   }
 
-  outboxCounts(): Record<string, number> {
+  outboxCounts(accounts?: string[]): Record<string, number> {
+    const list = accounts ? inList("a", accounts) : null;
     const rows = this.db
       .query(
-        `SELECT status, COUNT(*) AS count FROM actions WHERE status IN ('pending', 'running', 'error') GROUP BY status`,
+        `SELECT status, COUNT(*) AS count FROM actions WHERE status IN ('pending', 'running', 'error')
+         ${list ? `AND account IN (${list.sql})` : ""} GROUP BY status`,
       )
-      .all() as { status: string; count: number }[];
+      .all(list?.params ?? {}) as { status: string; count: number }[];
     return Object.fromEntries(rows.map((row) => [row.status, row.count]));
   }
 
-  listActions(filter: { status?: ActionStatus; limit: number }): ActionRow[] {
-    const sql = filter.status
-      ? "SELECT * FROM actions WHERE status = $status ORDER BY id DESC LIMIT $limit"
-      : "SELECT * FROM actions ORDER BY id DESC LIMIT $limit";
-    return this.db.query(sql).all(filter.status ? { status: filter.status, limit: filter.limit } : { limit: filter.limit }) as ActionRow[];
+  listActions(filter: { status?: ActionStatus; limit: number; accounts?: string[] }): ActionRow[] {
+    const clauses: string[] = [];
+    const params: Record<string, string | number> = { limit: filter.limit };
+    if (filter.status) {
+      clauses.push("status = $status");
+      params.status = filter.status;
+    }
+    if (filter.accounts) {
+      const list = inList("a", filter.accounts);
+      clauses.push(`account IN (${list.sql})`);
+      Object.assign(params, list.params);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db.query(`SELECT * FROM actions ${where} ORDER BY id DESC LIMIT $limit`).all(params) as ActionRow[];
   }
 
   listEvaluations(filter: {
@@ -927,6 +1045,8 @@ export class Store {
     ruleId?: string;
     onlyMatched?: boolean;
     account?: string;
+    /** Only these mailboxes (what the caller may see). */
+    accounts?: string[];
     folder?: string;
     uid?: number;
     messageId?: string;
@@ -941,6 +1061,11 @@ export class Store {
     if (filter.account) {
       clauses.push("e.account = $account");
       params.account = filter.account;
+    }
+    if (filter.accounts) {
+      const list = inList("a", filter.accounts);
+      clauses.push(`e.account IN (${list.sql})`);
+      Object.assign(params, list.params);
     }
     if (filter.folder) {
       clauses.push("e.folder = $folder");

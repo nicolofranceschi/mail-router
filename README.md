@@ -140,21 +140,29 @@ Da qualsiasi computer della rete all'indirizzo `http://IP-DEL-SERVER:8787/` (a Z
 
 - **Panoramica**: modalità, cartelle collegate, coda di invio, ultimi messaggi.
 - **Regole**: codice, priorità, accensione (attiva / in prova / spenta), prova sulle ultime
-  mail vere, cronologia con ripristino.
+  mail vere, cronologia con ripristino. Ogni regola appartiene a una casella e vale solo per la
+  sua posta; con più caselle si sceglie in alto quale guardare.
 - **Attività**: per ogni messaggio le regole applicate e le azioni (fatto, in coda, errore,
   simulato, bloccato), con «Riprova» per quelle non riuscite.
 - **Posta**: elenco e ricerca (con più caselle, si sceglie la casella), lettura senza segnare
   come letto, inoltra, sposta, elimina e «Prova le regole» su un messaggio.
-- **Dati di riferimento**: gli elenchi che le regole leggono (uffici, persone…).
+- **Dati di riferimento**: gli elenchi che le regole leggono (uffici, persone…), anche questi
+  separati per casella.
 - **Caselle di posta** (amministratori): aggiungi, modifica ed elimina le caselle sorvegliate,
   ognuna con i suoi server IMAP/SMTP, cartelle e opzioni di inoltro. Ogni salvataggio verifica
   l'accesso e riavvia il servizio per qualche secondo; una casella nuova parte dai messaggi che
-  arrivano da quel momento. Regole e dati di riferimento valgono per tutte (`email.account`).
+  arrivano da quel momento. Ogni casella ha le sue regole e i suoi dati di riferimento.
 - **Utenti** (amministratori): ogni persona ha la sua chiave di accesso, valida per il pannello e
   per Claude, mostrata una sola volta alla creazione. Si può rigenerare o revocare (eliminando
-  l'utente) senza toccare le chiavi degli altri. Ruoli: **amministratore** (tutto) e
-  **operatore** (regole, dati, posta e modalità; niente caselle, impostazioni, utenti né
-  `set_account_options`). Deve restare almeno un amministratore.
+  l'utente) senza toccare le chiavi degli altri. Ruoli: **amministratore** (tutte le caselle e
+  tutto il resto) e **operatore**: vede e gestisce solo le caselle che gli vengono assegnate
+  (di solito una, a volte più), con la loro posta, le loro regole, i loro dati e la loro attività;
+  niente caselle, impostazioni, utenti, modalità del servizio, registro né `set_account_options`.
+  Un operatore senza caselle assegnate non vede nulla. Deve restare almeno un amministratore.
+
+Aggiornando da una versione in cui regole e dati erano comuni: con una sola casella passano
+tutti a quella casella; con più caselle restano «senza casella», continuano a valere per tutte e
+l'amministratore li assegna dalla pagina Regole (e Dati di riferimento).
 - **Impostazioni**: comando per collegare Claude con la propria chiave e nuova chiave personale;
   per gli amministratori nome dell'installazione e domini ammessi; registro del servizio. La
   porta si sceglie in `compose.yaml` (`MAIL_ROUTER_PUBLISH`): nel container è sempre 8787.

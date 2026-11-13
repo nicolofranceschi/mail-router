@@ -102,6 +102,7 @@ suite("PEC inbox with a satellite sender (GreenMail)", () => {
     });
     app = await App.open(home, config);
     app.store.createRule({
+      account: "pec",
       name: "Ricevute PEC",
       description: "",
       priority: 1,
@@ -109,6 +110,7 @@ suite("PEC inbox with a satellite sender (GreenMail)", () => {
       code: "function rule(email) { return email.pec && email.pec.isReceipt ? { stop: true, reason: 'ricevuta' } : null }",
     });
     app.store.createRule({
+      account: "pec",
       name: "Diffide → legale",
       description: "",
       priority: 10,

@@ -1,13 +1,25 @@
 import { useEffect, useState } from "react";
 
+import { AccountPicker, NoMailbox, SHARED, type AccountView } from "../AccountPicker";
 import { tool } from "../api";
 import { Button, Confirm, Empty, ErrorBox, Field, Spinner, useAction, useLoad } from "../components";
 import { formatDate } from "../format";
 
-export function DataPage() {
-  const entries = useLoad(() => tool("list_data"), []);
+/** Arguments that point the data tools at the chosen mailbox, or at the old shared entries. */
+function target(account: string | undefined) {
+  return account === SHARED ? { shared: true } : { account };
+}
+
+export function DataPage({ status, isAdmin }: { status: any; isAdmin: boolean }) {
+  const accounts: AccountView[] = status?.accounts ?? [];
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const account = accountId ?? accounts[0]?.id;
+  const entries = useLoad(() => (account ? tool("list_data", target(account)) : Promise.resolve(null)), [account]);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const list: any[] = entries.data?.entries ?? [];
+  // Old entries shared by every mailbox: shown to administrators only while some are left.
+  const hasShared = isAdmin && (account === SHARED || Boolean(entries.data?.sharedOldEntries));
 
   return (
     <div className="page">
@@ -16,27 +28,47 @@ export function DataPage() {
           <h1>Dati di riferimento</h1>
           <p className="muted">
             Elenchi che le regole leggono come <span className="mono">data.nome</span>: uffici, persone, fornitori… Cambiarli qui
-            cambia il comportamento delle regole senza toccarne il codice.
+            cambia il comportamento delle regole senza toccarne il codice. Ogni casella ha i suoi elenchi, letti solo dalle
+            sue regole.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            setCreating(true);
-            setSelected(null);
-          }}
-        >
-          Nuovo elenco
-        </Button>
+        <div className="row wrap">
+          <AccountPicker
+            accounts={accounts}
+            value={account}
+            onChange={(id) => {
+              setAccountId(id);
+              setSelected(null);
+              setCreating(false);
+            }}
+            sharedLabel={hasShared ? "Comuni a tutte le caselle (vecchi)" : undefined}
+          />
+          <Button
+            disabled={!account}
+            onClick={() => {
+              setCreating(true);
+              setSelected(null);
+            }}
+          >
+            Nuovo elenco
+          </Button>
+        </div>
       </div>
+      {account === SHARED ? (
+        <div className="notice">
+          Elenchi di prima che ogni casella avesse i suoi: li leggono le regole di tutte le caselle. Per spostarne uno in una
+          casella, ricrealo lì con lo stesso nome ed eliminalo da qui.
+        </div>
+      ) : null}
       {entries.error ? <ErrorBox error={entries.error} onRetry={entries.reload} /> : null}
-      {!entries.data ? (
-        <Spinner />
-      ) : (
+      {!account ? <NoMailbox /> : null}
+      {account && !entries.data && !entries.error ? <Spinner /> : null}
+      {account && entries.data ? (
         <div className="split">
           <div className="card flush">
-            {entries.data.length ? (
+            {list.length ? (
               <div className="list">
-                {entries.data.map((entry: any) => (
+                {list.map((entry: any) => (
                   <div
                     key={entry.key}
                     className={`list-item clickable ${selected === entry.key ? "selected" : ""}`}
@@ -60,6 +92,7 @@ export function DataPage() {
           {creating ? (
             <DataEditor
               key="new"
+              account={account}
               onSaved={(key) => {
                 setCreating(false);
                 setSelected(key);
@@ -69,7 +102,8 @@ export function DataPage() {
             />
           ) : selected ? (
             <DataEditor
-              key={selected}
+              key={`${account}:${selected}`}
+              account={account}
               entryKey={selected}
               onSaved={() => entries.reload()}
               onDeleted={() => {
@@ -81,13 +115,26 @@ export function DataPage() {
             <div className="card muted">Seleziona un elenco per vederlo o modificarlo.</div>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
-function DataEditor({ entryKey, onSaved, onDeleted }: { entryKey?: string; onSaved: (key: string) => void; onDeleted: () => void }) {
-  const existing = useLoad(() => (entryKey ? tool("get_data", { key: entryKey }) : Promise.resolve(null)), [entryKey]);
+function DataEditor({
+  account,
+  entryKey,
+  onSaved,
+  onDeleted,
+}: {
+  account: string;
+  entryKey?: string;
+  onSaved: (key: string) => void;
+  onDeleted: () => void;
+}) {
+  const existing = useLoad(
+    () => (entryKey ? tool("get_data", { ...target(account), key: entryKey }) : Promise.resolve(null)),
+    [account, entryKey],
+  );
   const [key, setKey] = useState(entryKey ?? "");
   const [description, setDescription] = useState("");
   const [text, setText] = useState(entryKey ? "" : '{\n  "esempio": "valore"\n}');
@@ -114,7 +161,7 @@ function DataEditor({ entryKey, onSaved, onDeleted }: { entryKey?: string; onSav
       setParseError(`Il contenuto non è JSON valido: ${(failure as Error).message}`);
       return;
     }
-    const saved = await run(() => tool("set_data", { key, value, description }), "Elenco salvato");
+    const saved = await run(() => tool("set_data", { ...target(account), key, value, description }), "Elenco salvato");
     if (saved) onSaved(key);
   };
 
@@ -150,7 +197,7 @@ function DataEditor({ entryKey, onSaved, onDeleted }: { entryKey?: string; onSav
           danger
           onClose={() => setConfirmDelete(false)}
           onConfirm={async () => {
-            await tool("delete_data", { key: entryKey });
+            await tool("delete_data", { ...target(account), key: entryKey });
             onDeleted();
           }}
         >

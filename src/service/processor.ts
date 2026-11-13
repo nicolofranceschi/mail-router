@@ -85,7 +85,13 @@ export async function processMessage(
     },
     app.config.engine.maxTextChars,
   );
-  const outcomes = evaluateRules(app.sandbox, app.engineRules(), email, app.store.dataObject(), app.config.engine.ruleTimeoutMs);
+  const outcomes = evaluateRules(
+    app.sandbox,
+    app.engineRules(accountConfig.id),
+    email,
+    app.store.dataObject(accountConfig.id),
+    app.config.engine.ruleTimeoutMs,
+  );
   const plan = planActions(outcomes, {
     folder: message.folder,
     engineMode: app.mode,
@@ -205,7 +211,13 @@ export async function simulateMessage(
     },
     app.config.engine.maxTextChars,
   );
-  const outcomes = evaluateRules(app.sandbox, rules, email, app.store.dataObject(), app.config.engine.ruleTimeoutMs);
+  const outcomes = evaluateRules(
+    app.sandbox,
+    rules,
+    email,
+    app.store.dataObject(message.account.config.id),
+    app.config.engine.ruleTimeoutMs,
+  );
   const plan = planActions(outcomes, {
     folder: message.folder,
     engineMode: "live",

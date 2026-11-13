@@ -65,8 +65,8 @@ export function Accounts({ onChanged }: { onChanged: () => void }) {
         <div>
           <h1>Caselle di posta</h1>
           <p className="muted">
-            Ogni casella ha le sue cartelle sorvegliate; le regole e i dati di riferimento valgono per tutte (nelle regole:{" "}
-            <span className="mono">email.account</span>).
+            Ogni casella ha le sue cartelle sorvegliate, le sue regole e i suoi dati di riferimento. Gli operatori vedono
+            solo le caselle che gli assegni in Utenti.
           </p>
         </div>
         <Button variant="primary" onClick={() => setEditing({ mode: "new" })} disabled={Boolean(restarting)}>

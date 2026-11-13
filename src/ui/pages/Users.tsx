@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-import { api } from "../api";
+import type { AccountView } from "../AccountPicker";
+import { api, tool } from "../api";
 import { ClaudeAccess, type Access } from "../ClaudeAccess";
 import { Badge, Button, Confirm, CopyButton, Empty, ErrorBox, Field, Modal, Spinner, useAction, useLoad } from "../components";
 import { formatDate } from "../format";
@@ -9,21 +10,50 @@ interface UserView {
   id: string;
   name: string;
   role: "admin" | "operator";
+  accounts: string[];
   keyHint: string | null;
   createdAt: string;
   lastUsedAt: string | null;
 }
 
 const ROLES = {
-  admin: { label: "Amministratore", help: "Tutto: caselle di posta, impostazioni, utenti, oltre a regole, dati e posta." },
-  operator: { label: "Operatore", help: "Regole, dati di riferimento, posta e modalità del servizio; niente caselle, impostazioni o utenti." },
+  admin: {
+    label: "Amministratore",
+    help: "Tutto, su tutte le caselle: regole, dati e posta, più caselle di posta, modalità del servizio, impostazioni e utenti.",
+  },
+  operator: {
+    label: "Operatore",
+    help: "Solo le caselle che gli assegni: le loro regole, i loro dati di riferimento e la loro posta. Niente impostazioni, utenti né modalità del servizio.",
+  },
 } as const;
+
+/** Ticks for the mailboxes an operator works on. */
+function MailboxChoice({ accounts, value, onChange }: { accounts: AccountView[]; value: string[]; onChange: (next: string[]) => void }) {
+  if (!accounts.length) return <span className="muted small">Nessuna casella configurata.</span>;
+  return (
+    <div className="stack tight">
+      {accounts.map((entry) => (
+        <label key={entry.id} className="check">
+          <input
+            type="checkbox"
+            checked={value.includes(entry.id)}
+            onChange={(event) => onChange(event.target.checked ? [...value, entry.id] : value.filter((id) => id !== entry.id))}
+          />{" "}
+          {entry.id} <span className="muted small">({entry.user})</span>
+        </label>
+      ))}
+    </div>
+  );
+}
 
 type Fresh = Access & { key: string; who: string };
 
 /** Who may use the panel and Claude's connection: each user with an own key, revocable on its own. */
 export function Users({ me }: { me: string }) {
   const users = useLoad(() => api<{ users: UserView[] }>("/api/users"), []);
+  const status = useLoad(() => tool("get_status"), []);
+  const accounts: AccountView[] = status.data?.accounts ?? [];
+  const [assigning, setAssigning] = useState<UserView | null>(null);
   const [adding, setAdding] = useState(false);
   const [fresh, setFresh] = useState<Fresh | null>(null);
   const [rotating, setRotating] = useState<UserView | null>(null);
@@ -72,6 +102,15 @@ export function Users({ me }: { me: string }) {
                       {user.id === me ? <Badge tone="info">sei tu</Badge> : null}
                       <Badge tone={user.role === "admin" ? "warn" : ""}>{ROLES[user.role].label}</Badge>
                     </div>
+                    <span className="small">
+                      {user.role === "admin" ? (
+                        <span className="muted">Tutte le caselle</span>
+                      ) : user.accounts.length ? (
+                        <>Caselle: {user.accounts.join(", ")}</>
+                      ) : (
+                        <span style={{ color: "var(--err)" }}>Nessuna casella assegnata: non vede posta né regole</span>
+                      )}
+                    </span>
                     <span className="muted small">
                       chiave {user.keyHint ?? "precedente agli utenti"} · creato {formatDate(user.createdAt)} ·{" "}
                       {user.lastUsedAt ? `ultimo uso ${formatDate(user.lastUsedAt)}` : "mai usata"}
@@ -89,6 +128,11 @@ export function Users({ me }: { me: string }) {
                       <option value="admin">{ROLES.admin.label}</option>
                       <option value="operator">{ROLES.operator.label}</option>
                     </select>
+                    {user.role === "operator" ? (
+                      <Button small onClick={() => setAssigning(user)}>
+                        Caselle
+                      </Button>
+                    ) : null}
                     <Button small onClick={() => setRenaming(user)}>
                       Rinomina
                     </Button>
@@ -114,8 +158,20 @@ export function Users({ me }: { me: string }) {
         )}
       </div>
 
+      {assigning ? (
+        <AssignMailboxes
+          user={assigning}
+          accounts={accounts}
+          onClose={() => setAssigning(null)}
+          onDone={() => {
+            setAssigning(null);
+            users.reload();
+          }}
+        />
+      ) : null}
       {adding ? (
         <NewUser
+          accounts={accounts}
           onClose={() => setAdding(false)}
           onCreated={(created) => {
             setAdding(false);
@@ -168,13 +224,52 @@ export function Users({ me }: { me: string }) {
   );
 }
 
-function NewUser({ onClose, onCreated }: { onClose: () => void; onCreated: (fresh: Fresh) => void }) {
+function AssignMailboxes({
+  user,
+  accounts,
+  onClose,
+  onDone,
+}: {
+  user: UserView;
+  accounts: AccountView[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [chosen, setChosen] = useState<string[]>(user.accounts);
+  const { busy, run } = useAction();
+  const save = () =>
+    run(async () => {
+      await api("/api/users/update", { id: user.id, accounts: chosen });
+      onDone();
+    }, "Caselle aggiornate");
+  return (
+    <Modal title={`Caselle di ${user.name}`} onClose={onClose}>
+      <p className="muted small">
+        {user.name} vede solo la posta, le regole e i dati di riferimento di queste caselle, sia nel pannello sia con Claude.
+      </p>
+      <MailboxChoice accounts={accounts} value={chosen} onChange={setChosen} />
+      <div className="row" style={{ justifyContent: "flex-end" }}>
+        <Button onClick={onClose}>Annulla</Button>
+        <Button variant="primary" busy={busy} onClick={save}>
+          Salva
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function NewUser({ accounts, onClose, onCreated }: { accounts: AccountView[]; onClose: () => void; onCreated: (fresh: Fresh) => void }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState<UserView["role"]>("operator");
+  const [chosen, setChosen] = useState<string[]>(accounts.length === 1 ? [accounts[0]!.id] : []);
   const { busy, run } = useAction();
   const create = () =>
     run(async () => {
-      const result = await api<Access & { key: string; user: UserView }>("/api/users/create", { name: name.trim(), role });
+      const result = await api<Access & { key: string; user: UserView }>("/api/users/create", {
+        name: name.trim(),
+        role,
+        accounts: role === "operator" ? chosen : [],
+      });
       onCreated({ ...result, who: result.user.name });
     });
   return (
@@ -194,6 +289,11 @@ function NewUser({ onClose, onCreated }: { onClose: () => void; onCreated: (fres
           <option value="admin">{ROLES.admin.label}</option>
         </select>
       </Field>
+      {role === "operator" ? (
+        <Field label="Caselle di posta" hint="Di solito una: quella della persona">
+          <MailboxChoice accounts={accounts} value={chosen} onChange={setChosen} />
+        </Field>
+      ) : null}
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <Button onClick={onClose}>Annulla</Button>
         <Button variant="primary" busy={busy} disabled={!name.trim()} onClick={create}>

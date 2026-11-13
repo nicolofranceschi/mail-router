@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { EngineRule } from "../../rules/engine";
+import type { Scope } from "../../scope";
 import type { App } from "../../service/app";
 import { fetchForAnalysis, listFolders, type SearchCriteria } from "../../service/mailbox";
 import { simulateMessage } from "../../service/processor";
@@ -33,6 +34,7 @@ function ruleSummary(
 ) {
   return {
     id: rule.id,
+    account: rule.account,
     name: rule.name,
     description: rule.description,
     mode: rule.mode,
@@ -50,7 +52,15 @@ function checkCode(app: App, code: string): void {
   if (!compiled.ok) throw new Error(`Codice non valido (${compiled.kind}): ${compiled.error}`);
 }
 
-export function registerRuleTools(server: McpServer, app: App): void {
+/** The mailbox a new rule goes to: the one named, or the caller's only one. */
+function targetAccount(app: App, scope: Scope, requested?: string): string {
+  if (requested) return scope.accountId(app, requested);
+  const mine = scope.accountIds(app);
+  if (mine.length > 1) throw new Error(`Indica la casella della regola con account (una di: ${mine.join(", ")})`);
+  return scope.accountId(app);
+}
+
+export function registerRuleTools(server: McpServer, app: App, scope: Scope): void {
   server.registerTool(
     "get_rule_guide",
     {
@@ -66,23 +76,26 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Elenco regole",
       description:
-        "Lists the rules in evaluation order (ascending priority) with mode, 30-day match statistics and `effect`: 'live' (executing now: rule enabled and engine live), 'simulated' (decisions logged only) or 'off'. onlyActive returns just the 'live' ones.",
+        "Lists the rules of your mailboxes in evaluation order (ascending priority) with their mailbox (`account`), mode, 30-day match statistics and `effect`: 'live' (executing now: rule enabled and engine live), 'simulated' (decisions logged only) or 'off'. Each mailbox has its own rules: a message only goes through the rules of its mailbox. onlyActive returns just the 'live' ones. account: only that mailbox's rules.",
       inputSchema: {
+        account: z.string().optional().describe("Only the rules of this mailbox (default: all your mailboxes)"),
         includeCode: z.boolean().optional().describe("Include each rule's source code"),
         onlyActive: z.boolean().optional().describe("Only the rules executing right now"),
       },
     },
-    handler("list_rules", ({ includeCode, onlyActive }: { includeCode?: boolean; onlyActive?: boolean }) => {
+    handler("list_rules", ({ account, includeCode, onlyActive }: { account?: string; includeCode?: boolean; onlyActive?: boolean }) => {
       const stats = app.store.ruleStats(new Date(Date.now() - 30 * 86_400_000).toISOString());
+      const accounts = account ? [scope.accountId(app, account)] : scope.accountFilter(app);
       const rules = app.store
-        .listRules()
+        .listRules(accounts ? { accounts, includeShared: scope.isAdmin } : {})
         .map((rule) => ({
           ...ruleSummary(rule, app.mode, stats.get(rule.id)),
           ...(includeCode ? { code: rule.code } : {}),
         }))
         .filter((rule) => !onlyActive || rule.effect === "live");
-      const deleted = app.store.deletedRules().map((version) => ({
+      const deleted = app.store.deletedRules(accounts ? { accounts } : {}).map((version) => ({
         id: version.rule_id,
+        account: version.account,
         name: version.name,
         deletedAt: version.saved_at,
         version: version.version,
@@ -99,6 +112,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
       inputSchema: { id: z.string(), includeHistory: z.boolean().optional() },
     },
     handler("get_rule", ({ id, includeHistory }: { id: string; includeHistory?: boolean }) => {
+      scope.requireRuleAccess(app, id);
       const rule = app.store.getRule(id);
       if (!rule) throw new Error(`Regola ${id} non trovata (list_rules mostra anche quelle eliminate)`);
       const stats = app.store.ruleStats(new Date(Date.now() - 30 * 86_400_000).toISOString());
@@ -127,8 +141,9 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Crea regola",
       description:
-        "Creates a rule. `code` must define `function rule(email, data, h)` returning null or a decision (see get_rule_guide). New rules start in mode 'shadow' (decisions logged, nothing executed) unless the user explicitly asked to enable them. Test the code with test_rules first.",
+        "Creates a rule in one mailbox: it only sees that mailbox's messages and reference data. `code` must define `function rule(email, data, h)` returning null or a decision (see get_rule_guide). New rules start in mode 'shadow' (decisions logged, nothing executed) unless the user explicitly asked to enable them. Test the code with test_rules first.",
       inputSchema: {
+        account: z.string().optional().describe("Mailbox id the rule belongs to (required when you have more than one, see get_status)"),
         name: z.string().min(1).max(120).describe("Short name, in the user's language"),
         description: z.string().max(2000).describe("What the rule does and why, in plain words"),
         code: z.string().min(1).max(100_000),
@@ -138,9 +153,11 @@ export function registerRuleTools(server: McpServer, app: App): void {
     },
     handler(
       "create_rule",
-      (args: { name: string; description: string; code: string; priority?: number; mode?: RuleMode }) => {
+      (args: { account?: string; name: string; description: string; code: string; priority?: number; mode?: RuleMode }) => {
+        const account = targetAccount(app, scope, args.account);
         checkCode(app, args.code);
         const rule = app.store.createRule({
+          account,
           name: args.name,
           description: args.description,
           code: args.code,
@@ -161,9 +178,10 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Modifica regola",
       description:
-        "Changes a rule's code, name, description, priority or mode. This is how a rule is published (mode 'enabled'), sent back to observation ('shadow') or switched off ('disabled'). Every change is versioned. Only set mode 'enabled' when the user asked for it. New code on an enabled rule applies from the next message: try it with test_rules first.",
+        "Changes a rule's code, name, description, priority, mode or mailbox. This is how a rule is published (mode 'enabled'), sent back to observation ('shadow') or switched off ('disabled'). Every change is versioned. Only set mode 'enabled' when the user asked for it. New code on an enabled rule applies from the next message: try it with test_rules first.",
       inputSchema: {
         id: z.string(),
+        account: z.string().optional().describe("Move the rule to this mailbox (one of yours)"),
         name: z.string().min(1).max(120).optional(),
         description: z.string().max(2000).optional(),
         code: z.string().min(1).max(100_000).optional(),
@@ -173,7 +191,9 @@ export function registerRuleTools(server: McpServer, app: App): void {
     },
     handler(
       "update_rule",
-      (args: { id: string; name?: string; description?: string; code?: string; priority?: number; mode?: RuleMode }) => {
+      (args: { id: string; account?: string; name?: string; description?: string; code?: string; priority?: number; mode?: RuleMode }) => {
+        scope.requireRuleAccess(app, args.id);
+        if (args.account !== undefined) scope.accountId(app, args.account);
         if (args.code !== undefined) checkCode(app, args.code);
         const { id, ...patch } = args;
         const rule = app.store.updateRule(id, patch);
@@ -190,6 +210,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
       inputSchema: { id: z.string() },
     },
     handler("delete_rule", ({ id }: { id: string }) => {
+      scope.requireRuleAccess(app, id);
       const rule = app.store.deleteRule(id);
       return { deleted: { id: rule.id, name: rule.name }, restorable: true };
     }),
@@ -203,6 +224,10 @@ export function registerRuleTools(server: McpServer, app: App): void {
       inputSchema: { id: z.string(), version: z.number().int().positive() },
     },
     handler("restore_rule", ({ id, version }: { id: string; version: number }) => {
+      scope.requireRuleAccess(app, id);
+      const snapshot = app.store.ruleVersions(id).find((entry) => entry.version === version);
+      // An old version may belong to a mailbox the caller cannot see: restoring it there would act on someone else's mail.
+      if (snapshot && !scope.canSee(snapshot.account)) throw new Error(`La versione ${version} appartiene a un'altra casella`);
       const rule = app.store.restoreRule(id, version);
       return { restored: ruleSummary(rule, app.mode), fromVersion: version, engineMode: app.mode, note: EFFECT_NOTE[ruleEffect(rule.mode, app.mode)] };
     }),
@@ -213,7 +238,7 @@ export function registerRuleTools(server: McpServer, app: App): void {
     {
       title: "Prova regole",
       description:
-        "Dry-runs rules on real messages without sending or changing anything. Pass `code` to test a draft (alone, or among the saved rules with withExistingRules), `ruleIds` to test specific saved rules, or nothing to test every non-disabled rule. Messages: explicit `uids`, or the newest `last` (default 50, max 300) optionally filtered with search criteria. Shadow rules are treated as enabled to show what would happen. Returns only matches and errors unless showAll. foldersToBeCreated lists moveTo targets that do not exist yet: a real move would create them, so check them for typos.",
+        "Dry-runs rules on real messages of one mailbox without sending or changing anything. Pass `code` to test a draft (alone, or among that mailbox's saved rules with withExistingRules), `ruleIds` to test specific saved rules, or nothing to test every non-disabled rule of the mailbox. Messages: explicit `uids`, or the newest `last` (default 50, max 300) optionally filtered with search criteria. Shadow rules are treated as enabled to show what would happen. Returns only matches and errors unless showAll. foldersToBeCreated lists moveTo targets that do not exist yet: a real move would create them, so check them for typos.",
       inputSchema: {
         ...accountArg,
         ...folderArg,
@@ -241,7 +266,8 @@ export function registerRuleTools(server: McpServer, app: App): void {
         search?: SearchCriteria;
         showAll?: boolean;
       }) => {
-        const saved = app.store.listRules();
+        const account = scope.account(app, args.account);
+        const saved = app.store.rulesForAccount(account.config.id);
         let rules: (EngineRule & { priority: number })[];
         if (args.code !== undefined) {
           checkCode(app, args.code);
@@ -251,7 +277,8 @@ export function registerRuleTools(server: McpServer, app: App): void {
             : [draft];
         } else if (args.ruleIds?.length) {
           rules = args.ruleIds.map((id) => {
-            const rule = saved.find((candidate) => candidate.id === id);
+            scope.requireRuleAccess(app, id);
+            const rule = app.store.getRule(id);
             if (!rule) throw new Error(`Regola ${id} non trovata`);
             return { ...rule, mode: rule.mode === "disabled" ? ("enabled" as const) : rule.mode };
           });
@@ -260,7 +287,6 @@ export function registerRuleTools(server: McpServer, app: App): void {
         }
         if (!rules.length) throw new Error("Nessuna regola da provare");
 
-        const account = app.account(args.account);
         const folder = args.folder ?? app.defaultFolder(account);
         const results: unknown[] = [];
         let tested = 0;

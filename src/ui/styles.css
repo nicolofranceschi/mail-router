@@ -853,14 +853,29 @@ pre.block.code {
     border-bottom: 1px solid var(--border);
     padding: 8px 10px;
   }
-  .brand,
-  .sidebar-foot {
+  .brand {
     display: none;
   }
+  /* Every page stays visible: the items wrap onto a second line instead of
+     sliding off the right edge, where nobody finds them. */
   .nav-items {
     flex-direction: row;
-    overflow-x: auto;
-    scrollbar-width: none;
+    flex-wrap: wrap;
+  }
+  .nav-item {
+    padding: 6px 8px;
+  }
+  /* Who is signed in and the way out stay reachable on a narrow window too. */
+  .sidebar-foot {
+    margin-top: 6px;
+    padding: 6px 8px 0;
+    border-top: 1px solid var(--border);
+    flex-wrap: nowrap;
+    gap: 10px;
+  }
+  .sidebar-user {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .split {
     grid-template-columns: minmax(0, 1fr);
@@ -882,6 +897,13 @@ pre.block.code {
   }
   .panel-head > * {
     max-width: 100%;
+  }
+  /* Buttons next to a list entry (users, mailboxes) drop below it instead of squeezing the text. */
+  .list-item {
+    flex-wrap: wrap;
+  }
+  .list-item > .grow {
+    flex: 1 1 220px;
   }
   .list-item.activity {
     grid-template-columns: minmax(0, 1fr);

@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { log } from "../../log";
+import type { Scope } from "../../scope";
 import type { App } from "../../service/app";
 import { fetchMessage } from "../../service/mailbox";
 import { processMessage, simulateMessage } from "../../service/processor";
@@ -56,16 +57,16 @@ export function activityFor(app: App, evaluations: EvaluationRow[]) {
   }));
 }
 
-export function registerEngineTools(server: McpServer, app: App): void {
+export function registerEngineTools(server: McpServer, app: App, scope: Scope): void {
   server.registerTool(
     "get_status",
     {
       title: "Stato del servizio",
       description:
-        "Service status: engine mode, watched folders (connection, last check, errors), outbox counts, rule counts, accounts and the forward-domain allowlist.",
+        "Service status as you may see it: engine mode, your mailboxes (accounts) and their watched folders (connection, last check, errors), outbox counts, rule counts and the forward-domain allowlist.",
       inputSchema: {},
     },
-    handler("get_status", () => app.status()),
+    handler("get_status", () => ({ ...app.status(scope), you: { name: scope.name, role: scope.role } })),
   );
 
   server.registerTool(
@@ -120,7 +121,10 @@ export function registerEngineTools(server: McpServer, app: App): void {
     handler(
       "list_activity",
       (args: { limit?: number; sinceHours?: number; onlyMatched?: boolean; ruleId?: string; account?: string; folder?: string; uid?: number }) => {
+        if (args.account) scope.accountId(app, args.account);
+        if (args.ruleId) scope.requireRuleAccess(app, args.ruleId);
         const evaluations = app.store.listEvaluations({
+          accounts: scope.accountFilter(app),
           limit: args.limit ?? 30,
           sinceIso: args.sinceHours ? new Date(Date.now() - args.sinceHours * 3_600_000).toISOString() : undefined,
           onlyMatched: args.onlyMatched,
@@ -145,7 +149,7 @@ export function registerEngineTools(server: McpServer, app: App): void {
       },
     },
     handler("list_outbox", ({ status, limit }: { status?: ActionStatus; limit?: number }) =>
-      app.store.listActions({ status, limit: limit ?? 30 }).map((action) => ({
+      app.store.listActions({ status, limit: limit ?? 30, accounts: scope.accountFilter(app) }).map((action) => ({
         ...actionView(action),
         account: action.account,
         folder: action.folder,
@@ -164,7 +168,7 @@ export function registerEngineTools(server: McpServer, app: App): void {
       inputSchema: { actionId: z.number().int().positive().optional() },
     },
     handler("retry_failed", ({ actionId }: { actionId?: number }) => {
-      const requeued = app.store.retryErroredActions(actionId);
+      const requeued = app.store.retryErroredActions(actionId, scope.accountFilter(app));
       if (requeued) app.executor.kick();
       return { requeued, engineMode: app.mode };
     }),
@@ -181,11 +185,11 @@ export function registerEngineTools(server: McpServer, app: App): void {
     handler(
       "reprocess_email",
       async (args: { account?: string; folder?: string; uid: number; execute?: boolean }) => {
-        const account = app.account(args.account);
+        const account = scope.account(app, args.account);
         const folder = args.folder ?? app.defaultFolder(account);
         const message = await fetchMessage(account, folder, args.uid);
         if (!args.execute) {
-          const { email, outcomes, plan } = await simulateMessage(app, message, app.engineRules());
+          const { email, outcomes, plan } = await simulateMessage(app, message, app.engineRules(account.config.id));
           return {
             simulated: true,
             subject: email.subject,
